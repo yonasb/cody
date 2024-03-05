@@ -1,14 +1,27 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
+import fspromises from 'fs/promises'
 
-import type * as vscode from 'vscode'
+import * as vscode from 'vscode'
 
-import { TextDocumentWithUri } from '../../vscode/src/jsonrpc/TextDocumentWithUri'
+import { ProtocolTextDocumentWithUri } from '../../vscode/src/jsonrpc/TextDocumentWithUri'
 
+import { logDebug, logError } from '@sourcegraph/cody-shared'
+import { doesFileExist } from '../../vscode/src/commands/utils/workspace-files'
+import { resetActiveEditor } from '../../vscode/src/editor/active-editor'
 import { AgentTextDocument } from './AgentTextDocument'
-import { newTextEditor } from './AgentTextEditor'
 import * as vscode_shim from './vscode-shim'
 
+type EditFunction = (
+    uri: vscode.Uri,
+    callback: (editBuilder: vscode.TextEditorEdit) => void,
+    options?: { readonly undoStopBefore: boolean; readonly undoStopAfter: boolean }
+) => Promise<boolean>
+
+/**
+ * Manages document-related operations for the agent such as opening, closing,
+ * and changing text contents, selections and visible ranges.
+ */
 export class AgentWorkspaceDocuments implements vscode_shim.WorkspaceDocuments {
+    constructor(private params?: { edit?: EditFunction }) {}
     // Keys are `vscode.Uri.toString()` formatted. We don't use `vscode.Uri` as
     // keys because hashcode/equals behave unreliably.
     private readonly agentDocuments: Map<string, AgentTextDocument> = new Map()
@@ -16,7 +29,10 @@ export class AgentWorkspaceDocuments implements vscode_shim.WorkspaceDocuments {
     public workspaceRootUri: vscode.Uri | undefined
     public activeDocumentFilePath: vscode.Uri | null = null
 
-    public loadedDocument(document: TextDocumentWithUri): AgentTextDocument {
+    public openUri(uri: vscode.Uri): AgentTextDocument {
+        return this.loadedDocument(ProtocolTextDocumentWithUri.from(uri))
+    }
+    public loadedDocument(document: ProtocolTextDocumentWithUri): AgentTextDocument {
         const fromCache = this.agentDocuments.get(document.underlying.uri)
         if (!fromCache) {
             return new AgentTextDocument(document)
@@ -27,7 +43,7 @@ export class AgentWorkspaceDocuments implements vscode_shim.WorkspaceDocuments {
         }
 
         if (document.selection === undefined) {
-            document.underlying.selection = fromCache.underlying.selection
+            document.underlying.selection = fromCache.protocolDocument.selection
         }
 
         fromCache.update(document)
@@ -57,7 +73,7 @@ export class AgentWorkspaceDocuments implements vscode_shim.WorkspaceDocuments {
         return this.agentDocuments.get(uriString)
     }
 
-    public addDocument(document: TextDocumentWithUri): AgentTextDocument {
+    public addDocument(document: ProtocolTextDocumentWithUri): AgentTextDocument {
         const agentDocument = this.loadedDocument(document)
         this.agentDocuments.set(document.underlying.uri, agentDocument)
 
@@ -74,7 +90,9 @@ export class AgentWorkspaceDocuments implements vscode_shim.WorkspaceDocuments {
             {
                 tabs,
                 isActive: true,
-                activeTab: this.activeDocumentFilePath ? this.vscodeTab(this.activeDocumentFilePath) : undefined,
+                activeTab: this.activeDocumentFilePath
+                    ? this.vscodeTab(this.activeDocumentFilePath)
+                    : undefined,
                 viewColumn: vscode_shim.ViewColumn.Active,
             },
         ]
@@ -83,8 +101,9 @@ export class AgentWorkspaceDocuments implements vscode_shim.WorkspaceDocuments {
             vscode_shim.visibleTextEditors.pop()
         }
         for (const document of this.allDocuments()) {
-            vscode_shim.visibleTextEditors.push(newTextEditor(document))
+            vscode_shim.visibleTextEditors.push(this.newTextEditor(document))
         }
+        vscode_shim.onDidChangeVisibleTextEditors.fire(vscode_shim.visibleTextEditors)
 
         return agentDocument
     }
@@ -103,7 +122,85 @@ export class AgentWorkspaceDocuments implements vscode_shim.WorkspaceDocuments {
         } as any
     }
 
-    public openTextDocument(uri: vscode.Uri): Promise<vscode.TextDocument> {
-        return Promise.resolve(this.loadedDocument(new TextDocumentWithUri(uri)))
+    public async openTextDocument(uri: vscode.Uri): Promise<AgentTextDocument> {
+        const document = ProtocolTextDocumentWithUri.from(uri)
+        if (!this.agentDocuments.has(document.underlying.uri)) {
+            if (!doesFileExist(uri)) {
+                logError(
+                    'AgentWorkspaceDocuments.openTextDocument()',
+                    'File does not exist',
+                    uri.toString()
+                )
+            } else if (uri.scheme === 'file') {
+                // Read the file content from disk if the user hasn't opened this file before.
+                const buffer = await fspromises.readFile(uri.fsPath, 'utf8')
+                document.underlying.content = buffer.toString()
+            } else {
+                logError('vscode.workspace.openTextDocument', `unable to read non-file URI: ${uri}`)
+            }
+        }
+        return Promise.resolve(this.loadedDocument(document))
+    }
+
+    public async reset(): Promise<void> {
+        for (const uri of this.agentDocuments.keys()) {
+            const document = this.openUri(vscode.Uri.parse(uri))
+            await vscode_shim.onDidCloseTextDocument.cody_fireAsync(document)
+        }
+        vscode_shim.window.activeTextEditor = undefined
+        while (vscode_shim.visibleTextEditors.length > 0) {
+            vscode_shim.visibleTextEditors.pop()
+        }
+        vscode_shim.tabGroups.reset()
+        resetActiveEditor()
+    }
+
+    public async newTextEditorFromStringUri(uri: string): Promise<vscode.TextEditor> {
+        return this.newTextEditor(await this.openTextDocument(vscode.Uri.parse(uri)))
+    }
+
+    public newTextEditor(document: AgentTextDocument): vscode.TextEditor {
+        const selection: vscode.Selection = document.protocolDocument.selection
+            ? new vscode.Selection(
+                  new vscode.Position(
+                      document.protocolDocument.selection.start.line,
+                      document.protocolDocument.selection.start.character
+                  ),
+                  new vscode.Position(
+                      document.protocolDocument.selection.end.line,
+                      document.protocolDocument.selection.end.character
+                  )
+              )
+            : new vscode.Selection(new vscode.Position(0, 0), new vscode.Position(0, 0))
+
+        return {
+            // Looking at the implementation of the extension, we only need
+            // to provide `document` but we do a best effort to shim the
+            // rest of the `TextEditor` properties.
+            document,
+            selection,
+            selections: [selection],
+            edit: (callback, options) => {
+                if (this.params?.edit) {
+                    return this.params.edit(document.uri, callback, options)
+                }
+                logDebug('AgentTextEditor:edit()', 'not supported')
+                return Promise.resolve(false)
+            },
+            insertSnippet: () => Promise.resolve(true),
+            revealRange: () => {}, // TODO: implement this for inline edit commands?
+            options: {
+                cursorStyle: undefined,
+                insertSpaces: undefined,
+                lineNumbers: undefined,
+                // TODO: fix tabSize
+                tabSize: 2,
+            },
+            setDecorations: () => {},
+            viewColumn: vscode.ViewColumn.Active,
+            visibleRanges: [selection],
+            show: () => {},
+            hide: () => {},
+        }
     }
 }

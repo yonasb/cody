@@ -1,37 +1,52 @@
-import { LRUCache } from 'lru-cache'
-import * as uuid from 'uuid'
 import * as vscode from 'vscode'
 
-import { FeatureFlag, featureFlagProvider } from '@sourcegraph/cody-shared/src/experimentation/FeatureFlagProvider'
-import { RateLimitError } from '@sourcegraph/cody-shared/src/sourcegraph-api/errors'
-import { startAsyncSpan } from '@sourcegraph/cody-shared/src/tracing'
+import {
+    ConfigFeaturesSingleton,
+    FeatureFlag,
+    RateLimitError,
+    isCodyIgnoredFile,
+    wrapInActiveSpan,
+} from '@sourcegraph/cody-shared'
 
+import type { AuthStatus } from '../chat/protocol'
 import { logDebug } from '../log'
 import { localStorage } from '../services/LocalStorageProvider'
-import { CodyStatusBar } from '../services/StatusBar'
+import type { CodyStatusBar } from '../services/StatusBar'
 import { telemetryService } from '../services/telemetry'
 
-import { getArtificialDelay, LatencyFeatureFlags, resetArtificialDelay } from './artificial-delay'
+import { recordExposedExperimentsToSpan } from '../services/open-telemetry/utils'
+import { type LatencyFeatureFlags, getArtificialDelay, resetArtificialDelay } from './artificial-delay'
+import { completionProviderConfig } from './completion-provider-config'
 import { ContextMixer } from './context/context-mixer'
-import { ContextStrategy, DefaultContextStrategyFactory } from './context/context-strategy'
+import { DefaultContextStrategyFactory } from './context/context-strategy'
 import type { BfgRetriever } from './context/retrievers/bfg/bfg-retriever'
 import { getCompletionIntent } from './doc-context-getters'
+import { FirstCompletionDecorationHandler } from './first-completion-decoration-handler'
 import { formatCompletion } from './format-completion'
-import { DocumentContext, getCurrentDocContext } from './get-current-doc-context'
+import { getCurrentDocContext } from './get-current-doc-context'
 import {
-    getInlineCompletions,
-    InlineCompletionsParams,
+    type InlineCompletionsParams,
     InlineCompletionsResultSource,
-    LastInlineCompletionCandidate,
+    type LastInlineCompletionCandidate,
     TriggerKind,
+    getInlineCompletions,
 } from './get-inline-completions'
+import { isCompletionVisible } from './is-completion-visible'
+import type { CompletionBookkeepingEvent, CompletionItemID, CompletionLogID } from './logger'
 import * as CompletionLogger from './logger'
-import { CompletionBookkeepingEvent, CompletionItemID, CompletionLogID } from './logger'
-import { ProviderConfig } from './providers/provider'
-import { RequestManager, RequestParams } from './request-manager'
+import { isLocalCompletionsProvider } from './providers/experimental-ollama'
+import type { ProviderConfig } from './providers/provider'
+import { RequestManager, type RequestParams } from './request-manager'
 import { getRequestParamsFromLastCandidate } from './reuse-last-candidate'
-import { InlineCompletionItemWithAnalytics } from './text-processing/process-inline-completions'
-import { ProvideInlineCompletionItemsTracer, ProvideInlineCompletionsItemTraceData } from './tracer'
+import { SmartThrottleService } from './smart-throttle'
+import {
+    type AutocompleteInlineAcceptedCommandArgs,
+    type AutocompleteItem,
+    analyticsItemToAutocompleteItem,
+    suggestedAutocompleteItemsCache,
+    updateInsertRangeForVSCode,
+} from './suggested-autocomplete-items-cache'
+import type { ProvideInlineCompletionItemsTracer, ProvideInlineCompletionsItemTraceData } from './tracer'
 
 interface AutocompleteResult extends vscode.InlineCompletionList {
     logId: CompletionLogID
@@ -40,91 +55,24 @@ interface AutocompleteResult extends vscode.InlineCompletionList {
     completionEvent?: CompletionBookkeepingEvent
 }
 
-export class AutocompleteItem extends vscode.InlineCompletionItem {
-    /**
-     * An ID used to track this particular completion item. This is used mainly for the Agent which,
-     * given it's JSON RPC interface, needs to be able to identify the completion item and can not
-     * rely on the object reference like the VS Code API can. This allows us to simplify external
-     * API's that require the completion item to only have an ID.
-     */
-    public id: CompletionItemID
-
-    /**
-     * An ID used to track the completion request lifecycle. This is used for completion analytics
-     * bookkeeping.
-     */
-    public logId: CompletionLogID
-
-    /**
-     * The range needed for tracking the completion after inserting. This is needed because the
-     * actual insert range might overlap with content that is already in the document since we set
-     * it to always start with the current line beginning in VS Code.
-     *
-     * TODO: Remove the need for making having this typed as undefined.
-     */
-    public trackedRange: vscode.Range | undefined
-
-    /**
-     * The request params used to fetch the completion item.
-     */
-    public requestParams: RequestParams
-
-    /**
-     * The completion item used for analytics perspectives. This one is the raw completion without
-     * the VS Code specific changes applied via processInlineCompletionsForVSCode.
-     */
-    public analyticsItem: InlineCompletionItemWithAnalytics
-
-    constructor(
-        insertText: string | vscode.SnippetString,
-        logId: CompletionLogID,
-        range: vscode.Range,
-        trackedRange: vscode.Range,
-        requestParams: RequestParams,
-        completionItem: InlineCompletionItemWithAnalytics,
-        command?: vscode.Command
-    ) {
-        super(insertText, range, command)
-        this.id = uuid.v4() as CompletionItemID
-        this.logId = logId
-        this.trackedRange = trackedRange
-        this.requestParams = requestParams
-        this.analyticsItem = completionItem
-    }
-}
-
-interface AutocompleteInlineAcceptedCommandArgs {
-    codyCompletion: AutocompleteItem
-}
-
-// Maintain a cache of recommended VS Code completion items. This allows us to find the suggestion
-// request ID that this completion was associated with and allows our agent backend to track
-// completions with a single ID (VS Code uses the completion result item object reference as an ID
-// but since the agent uses a JSON RPC bridge, the object reference is no longer known later).
-const suggestedCompletionItemIDs = new LRUCache<CompletionItemID, AutocompleteItem>({
-    max: 60,
-})
-
-export interface CodyCompletionItemProviderConfig {
+interface CodyCompletionItemProviderConfig {
     providerConfig: ProviderConfig
     statusBar: CodyStatusBar
     tracer?: ProvideInlineCompletionItemsTracer | null
     triggerNotice: ((notice: { key: string }) => void) | null
     isRunningInsideAgent?: boolean
 
+    authStatus: AuthStatus
     isDotComUser?: boolean
 
-    contextStrategy: ContextStrategy
     createBfgRetriever?: () => BfgRetriever
 
     // Settings
     formatOnAccept?: boolean
+    disableInsideComments?: boolean
 
     // Feature flags
     completeSuggestWidgetSelection?: boolean
-    disableRecyclingOfPreviousRequests?: boolean
-    dynamicMultilineCompletions?: boolean
-    hotStreak?: boolean
 }
 
 interface CompletionRequest {
@@ -133,7 +81,9 @@ interface CompletionRequest {
     context: vscode.InlineCompletionContext
 }
 
-export class InlineCompletionItemProvider implements vscode.InlineCompletionItemProvider, vscode.Disposable {
+export class InlineCompletionItemProvider
+    implements vscode.InlineCompletionItemProvider, vscode.Disposable
+{
     private lastCompletionRequest: CompletionRequest | null = null
     // This field is going to be set if you use the keyboard shortcut to manually trigger a
     // completion. Since VS Code does not provide a way to distinguish manual vs automatic
@@ -145,12 +95,17 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
 
     private requestManager: RequestManager
     private contextMixer: ContextMixer
+    private smartThrottleService: SmartThrottleService | null = null
 
     /** Mockable (for testing only). */
     protected getInlineCompletions = getInlineCompletions
 
     /** Accessible for testing only. */
     protected lastCandidate: LastInlineCompletionCandidate | undefined
+
+    private lastAcceptedCompletionItem:
+        | Pick<AutocompleteItem, 'requestParams' | 'analyticsItem'>
+        | undefined
 
     private disposables: vscode.Disposable[] = []
 
@@ -161,9 +116,7 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
     constructor({
         completeSuggestWidgetSelection = true,
         formatOnAccept = true,
-        disableRecyclingOfPreviousRequests = false,
-        dynamicMultilineCompletions = false,
-        hotStreak = false,
+        disableInsideComments = false,
         tracer = null,
         createBfgRetriever,
         ...config
@@ -172,9 +125,7 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
             ...config,
             completeSuggestWidgetSelection,
             formatOnAccept,
-            disableRecyclingOfPreviousRequests,
-            dynamicMultilineCompletions,
-            hotStreak,
+            disableInsideComments,
             tracer,
             isRunningInsideAgent: config.isRunningInsideAgent ?? false,
             isDotComUser: config.isDotComUser ?? false,
@@ -192,17 +143,26 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
             // find a workaround that is not silently updating the user's VS Code settings.
             void vscode.workspace
                 .getConfiguration()
-                .update('editor.inlineSuggest.suppressSuggestions', true, vscode.ConfigurationTarget.Global)
+                .update(
+                    'editor.inlineSuggest.suppressSuggestions',
+                    true,
+                    vscode.ConfigurationTarget.Global
+                )
         }
 
-        this.requestManager = new RequestManager({
-            disableRecyclingOfPreviousRequests: this.config.disableRecyclingOfPreviousRequests,
-        })
+        this.requestManager = new RequestManager()
         this.contextMixer = new ContextMixer(
-            new DefaultContextStrategyFactory(config.contextStrategy, createBfgRetriever)
+            new DefaultContextStrategyFactory(
+                completionProviderConfig.contextStrategy,
+                createBfgRetriever
+            )
         )
+        if (completionProviderConfig.smartThrottle) {
+            this.smartThrottleService = new SmartThrottleService()
+            this.disposables.push(this.smartThrottleService)
+        }
 
-        const chatHistory = localStorage.getChatHistory()?.chat
+        const chatHistory = localStorage.getChatHistory(this.config.authStatus)?.chat
         this.isProbablyNewInstall = !chatHistory || Object.entries(chatHistory).length === 0
 
         logDebug(
@@ -219,6 +179,10 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
                 }
             )
         )
+
+        // Warm caches for the config feature configuration to avoid the first completion call
+        // having to block on this.
+        void ConfigFeaturesSingleton.getInstance().getConfigFeatures()
     }
 
     /** Set the tracer (or unset it with `null`). */
@@ -235,24 +199,39 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
         // Making it optional here to execute multiple suggestion in parallel from the CLI script.
         token?: vscode.CancellationToken
     ): Promise<AutocompleteResult | null> {
-        return startAsyncSpan('autocomplete.provideInlineCompletionItems', async () => {
+        // Do not create item for files that are on the cody ignore list
+        if (isCodyIgnoredFile(document.uri)) {
+            return null
+        }
+
+        return wrapInActiveSpan('autocomplete.provideInlineCompletionItems', async span => {
             // Update the last request
             const lastCompletionRequest = this.lastCompletionRequest
-            const completionRequest: CompletionRequest = { document, position, context }
+            const completionRequest: CompletionRequest = {
+                document,
+                position,
+                context,
+            }
             this.lastCompletionRequest = completionRequest
 
+            const configFeatures = await ConfigFeaturesSingleton.getInstance().getConfigFeatures()
+
+            if (!configFeatures.autoComplete) {
+                // If Configfeatures exists and autocomplete is disabled then raise
+                // the error banner for autocomplete config turned off
+                const error = new Error('AutocompleteConfigTurnedOff')
+                this.onError(error)
+                throw error
+            }
             const start = performance.now()
 
             if (!this.lastCompletionRequestTimestamp) {
                 this.lastCompletionRequestTimestamp = start
             }
 
-            // We start feature flag requests early so that we have a high chance of getting a response
-            // before we need it.
-            const userLatencyPromise = featureFlagProvider.evaluateFeatureFlag(FeatureFlag.CodyAutocompleteUserLatency)
             const tracer = this.config.tracer ? createTracerForInvocation(this.config.tracer) : undefined
 
-            let stopLoading: () => void | undefined
+            let stopLoading: (() => void) | undefined
             const setIsLoading = (isLoading: boolean): void => {
                 if (isLoading) {
                     // We do not want to show a loading spinner when the user is rate limited to
@@ -261,7 +240,12 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
                     // We still make the request to find out if the user is still rate limited.
                     const hasRateLimitError = this.config.statusBar.hasError(RateLimitError.errorName)
                     if (!hasRateLimitError) {
-                        stopLoading = this.config.statusBar.startLoading('Completions are being generated')
+                        stopLoading = this.config.statusBar.startLoading(
+                            'Completions are being generated',
+                            {
+                                timeoutMs: 30_000,
+                            }
+                        )
                     }
                 } else {
                     stopLoading?.()
@@ -294,13 +278,14 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
             }
 
             const triggerKind =
-                this.lastManualCompletionTimestamp && this.lastManualCompletionTimestamp > Date.now() - 500
+                this.lastManualCompletionTimestamp &&
+                this.lastManualCompletionTimestamp > Date.now() - 500
                     ? TriggerKind.Manual
                     : context.triggerKind === vscode.InlineCompletionTriggerKind.Automatic
-                    ? TriggerKind.Automatic
-                    : takeSuggestWidgetSelectionIntoAccount
-                    ? TriggerKind.SuggestWidget
-                    : TriggerKind.Hover
+                      ? TriggerKind.Automatic
+                      : takeSuggestWidgetSelectionIntoAccount
+                          ? TriggerKind.SuggestWidget
+                          : TriggerKind.Hover
             this.lastManualCompletionTimestamp = null
 
             const docContext = getCurrentDocContext({
@@ -310,7 +295,7 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
                 maxSuffixLength: this.config.providerConfig.contextSizeHints.suffixChars,
                 // We ignore the current context selection if completeSuggestWidgetSelection is not enabled
                 context: takeSuggestWidgetSelectionIntoAccount ? context : undefined,
-                dynamicMultilineCompletions: this.config.dynamicMultilineCompletions,
+                dynamicMultilineCompletions: completionProviderConfig.dynamicMultilineCompletions,
             })
 
             const completionIntent = getCompletionIntent({
@@ -319,15 +304,28 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
                 prefix: docContext.prefix,
             })
 
-            const latencyFeatureFlags: LatencyFeatureFlags = {
-                user: await userLatencyPromise,
+            if (this.config.disableInsideComments && completionIntent === 'comment') {
+                return null
             }
+
+            const latencyFeatureFlags: LatencyFeatureFlags = {
+                user: completionProviderConfig.getPrefetchedFlag(
+                    FeatureFlag.CodyAutocompleteUserLatency
+                ),
+            }
+
             const artificialDelay = getArtificialDelay(
                 latencyFeatureFlags,
                 document.uri.toString(),
                 document.languageId,
                 completionIntent
             )
+
+            const isLocalProvider = isLocalCompletionsProvider(this.config.providerConfig.identifier)
+            const isEagerCancellationEnabled = completionProviderConfig.getPrefetchedFlag(
+                FeatureFlag.CodyAutocompleteEagerCancellation
+            )
+            const debounceInterval = isLocalProvider ? 125 : isEagerCancellationEnabled ? 10 : 75
 
             try {
                 const result = await this.getInlineCompletions({
@@ -339,10 +337,11 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
                     providerConfig: this.config.providerConfig,
                     contextMixer: this.contextMixer,
                     requestManager: this.requestManager,
+                    smartThrottleService: this.smartThrottleService,
                     lastCandidate: this.lastCandidate,
                     debounceInterval: {
-                        singleLine: 75,
-                        multiLine: 125,
+                        singleLine: debounceInterval,
+                        multiLine: debounceInterval,
                     },
                     setIsLoading,
                     abortSignal: abortController.signal,
@@ -353,8 +352,8 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
                     completeSuggestWidgetSelection: takeSuggestWidgetSelectionIntoAccount,
                     artificialDelay,
                     completionIntent,
-                    dynamicMultilineCompletions: this.config.dynamicMultilineCompletions,
-                    hotStreak: this.config.hotStreak,
+                    lastAcceptedCompletionItem: this.lastAcceptedCompletionItem,
+                    isDotComUser: this.config.isDotComUser,
                 })
 
                 // Avoid any further work if the completion is invalidated already.
@@ -380,19 +379,12 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
                     lastTriggeredPrefix !== undefined &&
                     currentPrefix.length < lastTriggeredPrefix.length
                 ) {
-                    this.handleUnwantedCompletionItem(getRequestParamsFromLastCandidate(document, this.lastCandidate))
+                    this.handleUnwantedCompletionItem(
+                        getRequestParamsFromLastCandidate(document, this.lastCandidate)
+                    )
                 }
 
-                const items = processInlineCompletionsForVSCode(
-                    result.logId,
-                    document,
-                    docContext,
-                    position,
-                    result.items,
-                    context
-                )
-
-                const visibleItems = items.filter(item =>
+                const visibleItems = result.items.filter(item =>
                     isCompletionVisible(
                         item,
                         document,
@@ -409,6 +401,7 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
                     // Returning null will clear any existing suggestions, thus we need to reset the
                     // last candidate.
                     this.lastCandidate = undefined
+                    CompletionLogger.noResponse(result.logId)
                     return null
                 }
 
@@ -417,41 +410,48 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
                 // we can reuse it if the user types in such a way that it is still valid (such as by
                 // typing `ab` if the ghost text suggests `abcd`).
                 if (result.source !== InlineCompletionsResultSource.LastCandidate) {
-                    const candidate: LastInlineCompletionCandidate = {
+                    this.lastCandidate = {
                         uri: document.uri,
                         lastTriggerPosition: position,
                         lastTriggerDocContext: docContext,
                         lastTriggerSelectedCompletionInfo: context?.selectedCompletionInfo,
                         result,
                     }
-                    this.lastCandidate = visibleItems.length > 0 ? candidate : undefined
                 }
 
-                if (visibleItems.length > 0) {
-                    // Store the log ID for each completion item so that we can later map to the selected
-                    // item from the ID alone
-                    for (const item of visibleItems) {
-                        suggestedCompletionItemIDs.set(item.id, item)
-                    }
+                const autocompleteItems = analyticsItemToAutocompleteItem(
+                    result.logId,
+                    document,
+                    docContext,
+                    position,
+                    visibleItems,
+                    context,
+                    span
+                )
 
-                    if (!this.config.isRunningInsideAgent) {
-                        // Since VS Code has no callback as to when a completion is shown, we assume
-                        // that if we pass the above visibility tests, the completion is going to be
-                        // rendered in the UI
-                        this.unstable_handleDidShowCompletionItem(visibleItems[0])
-                    }
-                } else {
-                    CompletionLogger.noResponse(result.logId)
+                // Store the log ID for each completion item so that we can later map to the selected
+                // item from the ID alone
+                for (const item of autocompleteItems) {
+                    suggestedAutocompleteItemsCache.add(item)
                 }
 
                 // return `CompletionEvent` telemetry data to the agent command `autocomplete/execute`.
-                const completionResult: AutocompleteResult = {
+                const autocompleteResult: AutocompleteResult = {
                     logId: result.logId,
-                    items: visibleItems,
+                    items: updateInsertRangeForVSCode(autocompleteItems),
                     completionEvent: CompletionLogger.getCompletionEvent(result.logId),
                 }
 
-                return completionResult
+                if (!this.config.isRunningInsideAgent) {
+                    // Since VS Code has no callback as to when a completion is shown, we assume
+                    // that if we pass the above visibility tests, the completion is going to be
+                    // rendered in the UI
+                    this.unstable_handleDidShowCompletionItem(autocompleteItems[0])
+                }
+
+                recordExposedExperimentsToSpan(span)
+
+                return autocompleteResult
             } catch (error) {
                 this.onError(error as Error)
                 throw error
@@ -465,13 +465,14 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
      */
     public async handleDidAcceptCompletionItem(
         completionOrItemId:
-            | Pick<AutocompleteItem, 'range' | 'requestParams' | 'logId' | 'analyticsItem' | 'trackedRange'>
+            | Pick<
+                  AutocompleteItem,
+                  'range' | 'requestParams' | 'logId' | 'analyticsItem' | 'trackedRange'
+              >
             | CompletionItemID
     ): Promise<void> {
-        const completion =
-            typeof completionOrItemId === 'string'
-                ? suggestedCompletionItemIDs.get(completionOrItemId)
-                : completionOrItemId
+        const completion = suggestedAutocompleteItemsCache.get(completionOrItemId)
+
         if (!completion) {
             return
         }
@@ -491,11 +492,14 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
 
         this.handleFirstCompletionOnboardingNotices(completion.requestParams)
 
+        this.lastAcceptedCompletionItem = completion
+
         CompletionLogger.accepted(
             completion.logId,
             completion.requestParams.document,
             completion.analyticsItem,
-            completion.trackedRange
+            completion.trackedRange,
+            this.config.isDotComUser
         )
     }
 
@@ -532,16 +536,14 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
      * same name, it's prefixed with `unstable_` to avoid a clash when the new API goes GA.
      */
     public unstable_handleDidShowCompletionItem(
-        completionOrItemId: Pick<AutocompleteItem, 'logId' | 'analyticsItem'> | CompletionItemID
+        completionOrItemId: Pick<AutocompleteItem, 'logId' | 'analyticsItem' | 'span'> | CompletionItemID
     ): void {
-        const completion =
-            typeof completionOrItemId === 'string'
-                ? suggestedCompletionItemIDs.get(completionOrItemId)
-                : completionOrItemId
+        const completion = suggestedAutocompleteItemsCache.get(completionOrItemId)
         if (!completion) {
             return
         }
-        CompletionLogger.suggested(completion.logId, completion.analyticsItem)
+
+        CompletionLogger.suggested(completion.logId, completion.span)
     }
 
     /**
@@ -553,7 +555,12 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
         completion: Pick<AutocompleteItem, 'logId' | 'analyticsItem'>,
         acceptedLength: number
     ): void {
-        CompletionLogger.partiallyAccept(completion.logId, completion.analyticsItem, acceptedLength)
+        CompletionLogger.partiallyAccept(
+            completion.logId,
+            completion.analyticsItem,
+            acceptedLength,
+            this.config.isDotComUser
+        )
     }
 
     public async manuallyTriggerCompletion(): Promise<void> {
@@ -617,7 +624,7 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
             let shown = false
             this.config.statusBar.addError({
                 title: errorTitle,
-                description: (error.userMessage + ' ' + (error.retryMessage ?? '')).trim(),
+                description: `${error.userMessage} ${error.retryMessage ?? ''}`.trim(),
                 errorType: error.name,
                 onSelect: () => {
                     if (canUpgrade) {
@@ -656,6 +663,28 @@ export class InlineCompletionItemProvider implements vscode.InlineCompletionItem
             return
         }
 
+        if (error.message === 'AutocompleteConfigTurnedOff') {
+            const errorTitle = 'Cody Autocomplete Disabled by Site Admin'
+            // If there's already an existing error, don't add another one.
+            const hasAutocompleteDisabledBanner = this.config.statusBar.hasError(
+                'AutoCompleteDisabledByAdmin'
+            )
+            if (hasAutocompleteDisabledBanner) {
+                return
+            }
+            let shown = false
+            this.config.statusBar.addError({
+                title: errorTitle,
+                description: 'Contact your Sourcegraph site admin to enable autocomplete',
+                errorType: 'AutoCompleteDisabledByAdmin',
+                onShow: () => {
+                    if (shown) {
+                        return
+                    }
+                    shown = true
+                },
+            })
+        }
         // TODO(philipp-spiess): Bring back this code once we have fewer uncaught errors
         //
         // c.f. https://sourcegraph.slack.com/archives/C05AGQYD528/p1693471486690459
@@ -691,114 +720,16 @@ let globalInvocationSequenceForTracer = 0
  * {@link InlineCompletionItemProvider.provideInlineCompletionItems} that accumulates all of the
  * data for that invocation.
  */
-function createTracerForInvocation(tracer: ProvideInlineCompletionItemsTracer): InlineCompletionsParams['tracer'] {
-    let data: ProvideInlineCompletionsItemTraceData = { invocationSequence: ++globalInvocationSequenceForTracer }
+function createTracerForInvocation(
+    tracer: ProvideInlineCompletionItemsTracer
+): InlineCompletionsParams['tracer'] {
+    let data: ProvideInlineCompletionsItemTraceData = {
+        invocationSequence: ++globalInvocationSequenceForTracer,
+    }
     return (update: Partial<ProvideInlineCompletionsItemTraceData>) => {
         data = { ...data, ...update }
         tracer(data)
     }
-}
-
-/**
- * Process completions items in VS Code-specific ways.
- */
-function processInlineCompletionsForVSCode(
-    logId: CompletionLogID,
-    document: vscode.TextDocument,
-    docContext: DocumentContext,
-    position: vscode.Position,
-    items: InlineCompletionItemWithAnalytics[],
-    context: vscode.InlineCompletionContext
-): AutocompleteItem[] {
-    return items.map(completion => {
-        const currentLine = document.lineAt(position)
-        const currentLinePrefix = document.getText(currentLine.range.with({ end: position }))
-        const insertText = completion.insertText
-
-        // Return the completion from the start of the current line (instead of starting at the
-        // given position). This avoids UI jitter in VS Code; when typing or deleting individual
-        // characters, VS Code reuses the existing completion while it waits for the new one to
-        // come in.
-        const start = currentLine.range.start
-
-        // If the completion does not have a range set it will always exclude the same line suffix,
-        // so it has to overwrite the current same line suffix and reach to the end of the line.
-        const end = completion.range?.end || currentLine.range.end
-
-        const vscodeInsertRange = new vscode.Range(start, end)
-        const trackedRange = new vscode.Range(
-            currentLine.range.start.line,
-            currentLinePrefix.length,
-            end.line,
-            end.character
-        )
-
-        const action = {
-            title: 'Completion accepted',
-            command: 'cody.autocomplete.inline.accepted',
-            arguments: [
-                {
-                    // This is going to be set to the AutocompleteItem after initialization
-                    codyCompletion: undefined as any as AutocompleteItem,
-                } satisfies AutocompleteInlineAcceptedCommandArgs,
-            ],
-        }
-        const autocompleteItem = new AutocompleteItem(
-            currentLinePrefix + insertText,
-            logId,
-            vscodeInsertRange,
-            trackedRange,
-            {
-                document,
-                docContext,
-                selectedCompletionInfo: context.selectedCompletionInfo,
-                position,
-            } satisfies RequestParams,
-            completion,
-            action
-        )
-        action.arguments[0].codyCompletion = autocompleteItem
-        return autocompleteItem
-    })
-}
-
-function isCompletionVisible(
-    completion: AutocompleteItem,
-    document: vscode.TextDocument,
-    position: vscode.Position,
-    docContext: DocumentContext,
-    context: vscode.InlineCompletionContext,
-    completeSuggestWidgetSelection: boolean,
-    abortSignal: AbortSignal | undefined
-): boolean {
-    // There are these cases when a completion is being returned here but won't
-    // be displayed by VS Code.
-    //
-    // - When the abort signal was already triggered and a new completion
-    //   request was stared.
-    //
-    // - When the VS Code completion popup is open and we suggest a completion
-    //   that does not match the currently selected completion. For now we make
-    //   sure to not log these completions as displayed.
-    //
-    //   This check is only needed if we do not already take the completion
-    //   popup into account when generating completions as we do with the
-    //   completeSuggestWidgetSelection flag
-    //
-    // - When no completion contains all characters that are in the suffix of
-    //   the current line. This happens because we extend the insert range of
-    //   the completion to the whole line and any characters that are in the
-    //   suffix that would be overwritten, will need to be part of the inserted
-    //   completion (the VS Code UI does not allow character deletion). To test
-    //   for this, we have to do a per-character diff.
-    const isAborted = abortSignal ? abortSignal.aborted : false
-    const isMatchingPopupItem = completeSuggestWidgetSelection
-        ? true
-        : completionMatchesPopupItem(completion, position, document, context)
-    const isMatchingSuffix = completionMatchesSuffix(completion, docContext.currentLineSuffix)
-    const isVisible = !isAborted && isMatchingPopupItem && isMatchingSuffix
-
-    return isVisible
 }
 
 // Check if the current text in the editor overlaps with the currently selected
@@ -828,65 +759,14 @@ function currentEditorContentMatchesPopupItem(
     return true
 }
 
-// Checks if the currently selected completion widget item overlaps with the
-// proposed completion.
-//
-// VS Code won't show a completion if it won't.
-function completionMatchesPopupItem(
-    completion: AutocompleteItem,
-    position: vscode.Position,
-    document: vscode.TextDocument,
-    context: vscode.InlineCompletionContext
-): boolean {
-    if (context.selectedCompletionInfo) {
-        const currentText = document.getText(context.selectedCompletionInfo.range)
-        const selectedText = context.selectedCompletionInfo.text
-
-        const insertText = completion.insertText
-        if (typeof insertText !== 'string') {
-            return true
-        }
-
-        // To ensure a good experience, the VS Code insertion might have the range start at the
-        // beginning of the line. When this happens, the insertText needs to be adjusted to only
-        // contain the insertion after the current position.
-        const offset = position.character - (completion.range?.start.character ?? position.character)
-        const correctInsertText = insertText.slice(offset)
-        if (!(currentText + correctInsertText).startsWith(selectedText)) {
-            return false
-        }
-    }
-    return true
-}
-
-export function completionMatchesSuffix(
-    completion: Pick<AutocompleteItem, 'insertText'>,
-    currentLineSuffix: string
-): boolean {
-    if (typeof completion.insertText !== 'string') {
-        return false
-    }
-
-    const insertion = completion.insertText
-    let j = 0
-    // eslint-disable-next-line @typescript-eslint/prefer-for-of
-    for (let i = 0; i < insertion.length; i++) {
-        if (insertion[i] === currentLineSuffix[j]) {
-            j++
-        }
-    }
-    if (j === currentLineSuffix.length) {
-        return true
-    }
-
-    return false
-}
-
 /**
  * Returns true if the only difference between the two requests is the selected completions info
  * item from the completions widget.
  */
-function onlyCompletionWidgetSelectionChanged(prev: CompletionRequest, next: CompletionRequest): boolean {
+function onlyCompletionWidgetSelectionChanged(
+    prev: CompletionRequest,
+    next: CompletionRequest
+): boolean {
     if (prev.document.uri.toString() !== next.document.uri.toString()) {
         return false
     }
@@ -911,79 +791,4 @@ function onlyCompletionWidgetSelectionChanged(prev: CompletionRequest, next: Com
     }
 
     return prevSelectedCompletionInfo.text !== nextSelectedCompletionInfo.text
-}
-
-/**
- * Handles showing an in-editor decoration when a first completion is accepted.
- */
-class FirstCompletionDecorationHandler {
-    /**
-     * Duration to show decoration before automatically hiding.
-     *
-     * Modifying the document will also immediately hide.
-     */
-    private static readonly decorationDurationMilliseconds = 10000
-
-    /**
-     * A subscription watching for file changes to automatically hide the decoration.
-     *
-     * This subscription will be cancelled once the decoration is hidden (for any reason).
-     */
-    private editorChangeSubscription: vscode.Disposable | undefined
-
-    /**
-     * A timer to hide the decoration automatically.
-     */
-    private hideTimer: NodeJS.Timeout | undefined
-
-    private readonly decorationType = vscode.window.createTextEditorDecorationType({
-        after: {
-            margin: '0 0 0 40px',
-            contentText: '    🎉 You just accepted your first Cody autocomplete!',
-            color: new vscode.ThemeColor('editorGhostText.foreground'),
-        },
-        isWholeLine: true,
-    })
-
-    /**
-     * Shows the decoration if the editor is still active.
-     */
-    public show(request: RequestParams): void {
-        // We need an editor to show decorations. We don't want to blindly open request.document
-        // if somehow it's no longer active, so check if the current active editor is the right
-        // one. It's almost certainly the case.
-        const editor = vscode.window.activeTextEditor
-        if (editor?.document !== request.document) {
-            return
-        }
-
-        // Show the decoration at the position of the completion request. Because we set isWholeLine=true
-        // it'll always be shown at the end of this line, regardless of the length of the completion.
-        editor.setDecorations(this.decorationType, [new vscode.Range(request.position, request.position)])
-
-        // Hide automatically after a time..
-        this.hideTimer = setTimeout(
-            () => this.hide(editor),
-            FirstCompletionDecorationHandler.decorationDurationMilliseconds
-        )
-
-        // But also listen for changes to automatically hide if the user starts typing so that we're never
-        // in the way.
-        //
-        // We should never be called twice, but just in case dispose any existing sub to ensure we don't leak.
-        this.editorChangeSubscription = vscode.workspace.onDidChangeTextDocument(e => {
-            if (e.document === editor.document) {
-                this.hide(editor)
-            }
-        })
-    }
-
-    /**
-     * Hides the decoration and clears any active subscription/timeout.
-     */
-    private hide(editor: vscode.TextEditor): void {
-        clearTimeout(this.hideTimer)
-        this.editorChangeSubscription?.dispose()
-        editor.setDecorations(this.decorationType, [])
-    }
 }

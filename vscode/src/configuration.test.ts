@@ -1,56 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import type * as vscode from 'vscode'
 
-import { Configuration } from '@sourcegraph/cody-shared/src/configuration'
-import { DOTCOM_URL } from '@sourcegraph/cody-shared/src/sourcegraph-api/environments'
+import type { Configuration } from '@sourcegraph/cody-shared'
 
 import { getConfiguration } from './configuration'
+import { DEFAULT_VSCODE_SETTINGS } from './testutils/mocks'
 
 describe('getConfiguration', () => {
     it('returns default values when no config set', () => {
         const config: Pick<vscode.WorkspaceConfiguration, 'get'> = {
             get: <T>(_key: string, defaultValue?: T): typeof defaultValue | undefined => defaultValue,
         }
-        expect(getConfiguration(config)).toEqual({
-            serverEndpoint: DOTCOM_URL.href,
-            proxy: null,
-            codebase: '',
-            customHeaders: {},
-            chatPreInstruction: '',
-            useContext: 'embeddings',
-            autocomplete: true,
-            autocompleteLanguages: {
-                '*': true,
-            },
-            commandCodeLenses: false,
-            editorTitleCommandIcon: true,
-            experimentalChatPredictions: false,
-            experimentalGuardrails: false,
-            experimentalLocalSymbols: false,
-            experimentalSimpleChatContext: true,
-            experimentalSymfContext: false,
-            codeActions: true,
-            isRunningInsideAgent: false,
-            agentIDE: undefined,
-            debugEnable: false,
-            debugVerbose: false,
-            debugFilter: null,
-            telemetryLevel: 'all',
-            autocompleteAdvancedProvider: null,
-            autocompleteAdvancedServerEndpoint: null,
-            autocompleteAdvancedModel: null,
-            autocompleteAdvancedAccessToken: null,
-            autocompleteCompleteSuggestWidgetSelection: true,
-            autocompleteFormatOnAccept: true,
-            autocompleteExperimentalSyntacticPostProcessing: true,
-            autocompleteExperimentalDynamicMultilineCompletions: false,
-            autocompleteExperimentalHotStreak: false,
-            autocompleteExperimentalGraphContext: null,
-            autocompleteTimeouts: {},
-            testingLocalEmbeddingsEndpoint: undefined,
-            testingLocalEmbeddingsIndexLibraryPath: undefined,
-            testingLocalEmbeddingsModel: undefined,
-        } satisfies Configuration)
+        expect(getConfiguration(config)).toEqual(DEFAULT_VSCODE_SETTINGS)
     })
 
     it('reads values from config', () => {
@@ -74,8 +35,6 @@ describe('getConfiguration', () => {
                         return false
                     case 'cody.autocomplete.languages':
                         return { '*': true }
-                    case 'cody.experimental.chatPredictions':
-                        return true
                     case 'cody.commandCodeLenses':
                         return true
                     case 'cody.editorTitleCommandIcon':
@@ -84,6 +43,8 @@ describe('getConfiguration', () => {
                         return true
                     case 'cody.codeActions.enabled':
                         return true
+                    case 'cody.commandHints.enabled':
+                        return true
                     case 'cody.experimental.localSymbols':
                         return true
                     case 'cody.experimental.symf.path':
@@ -91,7 +52,9 @@ describe('getConfiguration', () => {
                     case 'cody.experimental.simpleChatContext':
                         return true
                     case 'cody.experimental.symfContext':
-                        return false
+                        return true
+                    case 'cody.experimental.tracing':
+                        return true
                     case 'cody.debug.enable':
                         return true
                     case 'cody.debug.verbose':
@@ -104,12 +67,8 @@ describe('getConfiguration', () => {
                         return 'My name is Jeff.'
                     case 'cody.autocomplete.advanced.provider':
                         return 'unstable-openai'
-                    case 'cody.autocomplete.advanced.serverEndpoint':
-                        return 'https://example.com/llm'
                     case 'cody.autocomplete.advanced.model':
-                        return 'starcoder-32b'
-                    case 'cody.autocomplete.advanced.accessToken':
-                        return 'foobar'
+                        return 'starcoder-16b'
                     case 'cody.autocomplete.advanced.timeout.multiline':
                         return undefined
                     case 'cody.autocomplete.advanced.timeout.singleline':
@@ -118,25 +77,37 @@ describe('getConfiguration', () => {
                         return false
                     case 'cody.autocomplete.formatOnAccept':
                         return true
+                    case 'cody.autocomplete.disableInsideComments':
+                        return false
                     case 'cody.autocomplete.experimental.syntacticPostProcessing':
                         return true
                     case 'cody.autocomplete.experimental.dynamicMultilineCompletions':
                         return false
                     case 'cody.autocomplete.experimental.hotStreak':
                         return false
+                    case 'cody.autocomplete.experimental.ollamaOptions':
+                        return {
+                            model: 'codellama:7b-code',
+                            url: 'http://localhost:11434',
+                        }
                     case 'cody.autocomplete.experimental.graphContext':
-                        return 'lsp-light'
+                        return 'bfg'
+                    case 'cody.autocomplete.experimental.smartThrottle':
+                        return false
                     case 'cody.advanced.agent.running':
                         return false
                     case 'cody.advanced.agent.ide':
                         return undefined
+                    case 'cody.internal.unstable':
+                        return false
+                    case 'cody.experimental.chatContextRanker':
+                        return false
                     default:
                         throw new Error(`unexpected key: ${key}`)
                 }
             },
         }
         expect(getConfiguration(config)).toEqual({
-            serverEndpoint: 'http://example.com',
             proxy: 'socks5://127.0.0.1:9999',
             codebase: 'my/codebase',
             useContext: 'keyword',
@@ -149,34 +120,42 @@ describe('getConfiguration', () => {
             autocompleteLanguages: {
                 '*': true,
             },
-            experimentalChatPredictions: true,
             commandCodeLenses: true,
             experimentalSimpleChatContext: true,
-            experimentalSymfContext: false,
+            experimentalSymfContext: true,
+            experimentalTracing: true,
             editorTitleCommandIcon: true,
             experimentalGuardrails: true,
-            experimentalLocalSymbols: true,
             codeActions: true,
+            commandHints: true,
             isRunningInsideAgent: false,
             agentIDE: undefined,
+            internalUnstable: false,
             debugEnable: true,
             debugVerbose: true,
             debugFilter: /.*/,
             telemetryLevel: 'off',
             autocompleteAdvancedProvider: 'unstable-openai',
-            autocompleteAdvancedServerEndpoint: 'https://example.com/llm',
-            autocompleteAdvancedModel: 'starcoder-32b',
-            autocompleteAdvancedAccessToken: 'foobar',
+            autocompleteAdvancedModel: 'starcoder-16b',
             autocompleteCompleteSuggestWidgetSelection: false,
             autocompleteFormatOnAccept: true,
-            autocompleteExperimentalSyntacticPostProcessing: true,
+            autocompleteDisableInsideComments: false,
             autocompleteExperimentalDynamicMultilineCompletions: false,
             autocompleteExperimentalHotStreak: false,
-            autocompleteExperimentalGraphContext: 'lsp-light',
-            autocompleteTimeouts: {},
+            autocompleteExperimentalGraphContext: 'bfg',
+            autocompleteExperimentalSmartThrottle: false,
+            autocompleteExperimentalOllamaOptions: {
+                model: 'codellama:7b-code',
+                url: 'http://localhost:11434',
+            },
+            autocompleteTimeouts: {
+                multiline: undefined,
+                singleline: undefined,
+            },
             testingLocalEmbeddingsEndpoint: undefined,
             testingLocalEmbeddingsIndexLibraryPath: undefined,
             testingLocalEmbeddingsModel: undefined,
+            experimentalChatContextRanker: false,
         } satisfies Configuration)
     })
 })

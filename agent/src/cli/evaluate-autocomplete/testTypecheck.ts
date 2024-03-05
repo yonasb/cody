@@ -1,11 +1,11 @@
 import { exec } from 'child_process'
-import * as fspromises from 'fs/promises'
 import * as os from 'os'
 import path from 'path'
+import * as fspromises from 'fs/promises'
 
-import { EvaluateAutocompleteOptions } from './evaluate-autocomplete'
-import { TestParameters } from './TestParameters'
+import type { TestParameters } from './TestParameters'
 import { Timer } from './Timer'
+import type { EvaluateAutocompleteOptions } from './evaluate-autocomplete'
 
 async function runCommand(command: string | undefined, cwd: string): Promise<boolean> {
     return new Promise<boolean>(resolve => {
@@ -42,7 +42,9 @@ export async function testInstall(options: EvaluateAutocompleteOptions): Promise
         return
     }
     if (options.worktree) {
-        throw new Error(`options.worktree=${options.worktree} is already defined, expected it to be undefined`)
+        throw new Error(
+            `options.worktree=${options.worktree} is already defined, expected it to be undefined`
+        )
     }
     options.worktree = await fspromises.mkdtemp(path.join(os.tmpdir(), 'evaluate-autocomplete-'))
     await runVoidCommand('git diff --exit-code', options.workspace)
@@ -73,7 +75,9 @@ export async function testTypecheck(parameters: TestParameters): Promise<boolean
         await fspromises.writeFile(absolutePath, newText)
         const timer = new Timer()
         const result = await runCommand(testCommand, worktree)
-        console.error(`Completion '${item.insertText}': ${result ? 'typecheck_ok' : 'typecheck_error'} (${timer})`)
+        console.error(
+            `Completion '${item.insertText}': ${result ? 'typecheck_ok' : 'typecheck_error'} (${timer})`
+        )
         return result
     } finally {
         await fspromises.writeFile(absolutePath, document.text)

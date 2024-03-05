@@ -1,11 +1,7 @@
 import type * as vscode from 'vscode'
+import type { URI } from 'vscode-uri'
 
 import type { DocumentContext } from './get-current-doc-context'
-
-export interface Completion {
-    content: string
-    stopReason?: string
-}
 
 /**
  * @see vscode.InlineCompletionItem
@@ -24,14 +20,14 @@ export interface InlineCompletionItem {
 /**
  * Keep property names in sync with the `EmbeddingsSearchResult` type.
  */
-export interface FileContextSnippet {
-    fileName: string
+interface FileContextSnippet {
+    uri: URI
+    startLine: number
+    endLine: number
     content: string
 }
-export interface SymbolContextSnippet {
-    fileName: string
+interface SymbolContextSnippet extends FileContextSnippet {
     symbol: string
-    content: string
 }
 export type ContextSnippet = FileContextSnippet | SymbolContextSnippet
 

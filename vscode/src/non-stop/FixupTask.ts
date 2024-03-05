@@ -1,10 +1,12 @@
 import * as vscode from 'vscode'
 
-import { ChatEventSource } from '@sourcegraph/cody-shared/src/chat/transcript/messages'
-import { FixupIntent } from '@sourcegraph/cody-shared/src/editor'
+import type { ChatEventSource, ContextItem, ContextMessage, EditModel } from '@sourcegraph/cody-shared'
 
-import { Diff } from './diff'
-import { FixupFile } from './FixupFile'
+import type { EditIntent, EditMode } from '../edit/types'
+
+import { getOverridenModelForIntent } from '../edit/utils/edit-models'
+import type { FixupFile } from './FixupFile'
+import type { Diff } from './diff'
 import { CodyTaskState } from './utils'
 
 export type taskID = string
@@ -12,6 +14,8 @@ export type taskID = string
 export class FixupTask {
     public id: taskID
     public state_: CodyTaskState = CodyTaskState.idle
+    private stateChanges = new vscode.EventEmitter<CodyTaskState>()
+    public onDidStateChange = this.stateChanges.event
     /**
      * The original text that we're working on updating. Set when we start an LLM spin.
      */
@@ -42,30 +46,48 @@ export class FixupTask {
     public formattingResolver: ((value: boolean) => void) | null = null
 
     constructor(
-        public readonly fixupFile: FixupFile,
+        /**
+         * The file that will be updated by Cody with the replacement text at the end of stream
+         * This is set by the FixupController when creating the task,
+         * and will be updated by the FixupController for tasks using the 'new' mode
+         */
+        public fixupFile: FixupFile,
         public readonly instruction: string,
+        public readonly userContextFiles: ContextItem[],
         /* The intent of the edit, derived from the source of the command. */
-        public readonly intent: FixupIntent = 'edit',
+        public readonly intent: EditIntent,
         public selectionRange: vscode.Range,
-        /* insert mode means insert replacement at selection, otherwise replace selection contents with replacement */
-        public insertMode?: boolean,
+        /* The mode indicates how code should be inserted */
+        public readonly mode: EditMode,
+        public readonly model: EditModel,
         /* the source of the instruction, e.g. 'code-action', 'doc', etc */
-        public source?: ChatEventSource
+        public source?: ChatEventSource,
+        public readonly contextMessages?: ContextMessage[],
+        /* The file to write the edit to. If not provided, the edit will be applied to the fixupFile. */
+        public destinationFile?: vscode.Uri
     ) {
         this.id = Date.now().toString(36).replaceAll(/\d+/g, '')
         this.instruction = instruction.replace(/^\/(edit|fix)/, '').trim()
         this.originalRange = selectionRange
-        // If there's no text determined to be selected then we will override the intent, as we can only add new code.
-        this.intent = selectionRange.isEmpty ? 'add' : intent
+        this.model = getOverridenModelForIntent(this.intent, this.model)
     }
 
     /**
      * Sets the task state. Checks the state transition is valid.
      */
     public set state(state: CodyTaskState) {
+        if (state === CodyTaskState.error) {
+            console.log(new Error().stack)
+        }
         this.state_ = state
+        this.stateChanges.fire(state)
     }
 
+    /**
+     * Gets the state of the fixup task.
+     *
+     * @returns The current state of the fixup task.
+     */
     public get state(): CodyTaskState {
         return this.state_
     }

@@ -1,19 +1,26 @@
-import { Configuration } from '@sourcegraph/cody-shared/src/configuration'
-import { FeatureFlag, featureFlagProvider } from '@sourcegraph/cody-shared/src/experimentation/FeatureFlagProvider'
-import { CodyLLMSiteConfiguration } from '@sourcegraph/cody-shared/src/sourcegraph-api/graphql/client'
+import {
+    type CodeCompletionsClient,
+    type ConfigurationWithAccessToken,
+    FeatureFlag,
+    featureFlagProvider,
+} from '@sourcegraph/cody-shared'
 
 import { logError } from '../../log'
-import { CodeCompletionsClient } from '../client'
 
+import type { AuthStatus } from '../../chat/protocol'
 import { createProviderConfig as createAnthropicProviderConfig } from './anthropic'
-import { createProviderConfig as createFireworksProviderConfig, FireworksOptions } from './fireworks'
-import { ProviderConfig } from './provider'
+import { createProviderConfig as createExperimentalOllamaProviderConfig } from './experimental-ollama'
+import {
+    type FireworksOptions,
+    createProviderConfig as createFireworksProviderConfig,
+} from './fireworks'
+import type { ProviderConfig } from './provider'
 import { createProviderConfig as createUnstableOpenAIProviderConfig } from './unstable-openai'
 
 export async function createProviderConfig(
-    config: Configuration,
+    config: ConfigurationWithAccessToken,
     client: CodeCompletionsClient,
-    codyLLMSiteConfig?: CodyLLMSiteConfiguration
+    authStatus: AuthStatus
 ): Promise<ProviderConfig | null> {
     /**
      * Look for the autocomplete provider in VSCode settings and return matching provider config.
@@ -35,10 +42,18 @@ export async function createProviderConfig(
                     client,
                     model: config.autocompleteAdvancedModel ?? model ?? null,
                     timeouts: config.autocompleteTimeouts,
+                    authStatus,
+                    config,
                 })
             }
             case 'anthropic': {
                 return createAnthropicProviderConfig({ client })
+            }
+            case 'experimental-ollama':
+            case 'unstable-ollama': {
+                return createExperimentalOllamaProviderConfig(
+                    config.autocompleteExperimentalOllamaOptions
+                )
             }
             default:
                 logError(
@@ -54,15 +69,15 @@ export async function createProviderConfig(
      * check the completions provider in the connected Sourcegraph instance site config
      * and return the matching provider config.
      */
-    if (codyLLMSiteConfig?.provider) {
+    if (authStatus.configOverwrites?.provider) {
         const parsed = parseProviderAndModel({
-            provider: codyLLMSiteConfig.provider,
-            model: codyLLMSiteConfig.completionModel,
+            provider: authStatus.configOverwrites.provider,
+            model: authStatus.configOverwrites.completionModel,
         })
         if (!parsed) {
             logError(
                 'createProviderConfig',
-                `Failed to parse the model name for '${codyLLMSiteConfig.provider}' completions provider.`
+                `Failed to parse the model name for '${authStatus.configOverwrites.provider}' completions provider.`
             )
             return null
         }
@@ -81,10 +96,19 @@ export async function createProviderConfig(
                     client,
                     timeouts: config.autocompleteTimeouts,
                     model: model ?? null,
+                    authStatus,
+                    config,
                 })
             case 'aws-bedrock':
             case 'anthropic':
-                return createAnthropicProviderConfig({ client })
+                return createAnthropicProviderConfig({
+                    client,
+                    // Only pass through the upstream-defined model if we're using Cody Gateway
+                    model:
+                        authStatus.configOverwrites.provider === 'sourcegraph'
+                            ? authStatus.configOverwrites.completionModel
+                            : undefined,
+                })
             default:
                 logError('createProviderConfig', `Unrecognized provider '${provider}' configured.`)
                 return null
@@ -98,7 +122,9 @@ export async function createProviderConfig(
     return createAnthropicProviderConfig({ client })
 }
 
-async function resolveDefaultProviderFromVSCodeConfigOrFeatureFlags(configuredProvider: string | null): Promise<{
+async function resolveDefaultProviderFromVSCodeConfigOrFeatureFlags(
+    configuredProvider: string | null
+): Promise<{
     provider: string
     model?: FireworksOptions['model']
 } | null> {
@@ -106,25 +132,17 @@ async function resolveDefaultProviderFromVSCodeConfigOrFeatureFlags(configuredPr
         return { provider: configuredProvider }
     }
 
-    const [starCoder7b, starCoder16b, starCoderHybrid, llamaCode7b, llamaCode13b] = await Promise.all([
-        featureFlagProvider.evaluateFeatureFlag(FeatureFlag.CodyAutocompleteStarCoder7B),
-        featureFlagProvider.evaluateFeatureFlag(FeatureFlag.CodyAutocompleteStarCoder16B),
+    const [starCoderHybrid, llamaCode13B] = await Promise.all([
         featureFlagProvider.evaluateFeatureFlag(FeatureFlag.CodyAutocompleteStarCoderHybrid),
-        featureFlagProvider.evaluateFeatureFlag(FeatureFlag.CodyAutocompleteLlamaCode7B),
         featureFlagProvider.evaluateFeatureFlag(FeatureFlag.CodyAutocompleteLlamaCode13B),
     ])
 
-    if (starCoder7b || starCoder16b || starCoderHybrid || llamaCode7b || llamaCode13b) {
-        const model = starCoder7b
-            ? 'starcoder-7b'
-            : starCoder16b
-            ? 'starcoder-16b'
-            : starCoderHybrid
-            ? 'starcoder-hybrid'
-            : llamaCode7b
-            ? 'llama-code-7b'
-            : 'llama-code-13b'
-        return { provider: 'fireworks', model }
+    if (llamaCode13B) {
+        return { provider: 'fireworks', model: 'llama-code-13b' }
+    }
+
+    if (starCoderHybrid) {
+        return { provider: 'fireworks', model: 'starcoder-hybrid' }
     }
 
     return null

@@ -1,16 +1,25 @@
-import React, { ComponentProps, useCallback, useRef, useState } from 'react'
+import type React from 'react'
+import { type ComponentProps, useCallback, useRef, useState } from 'react'
 
 import { VSCodeDropdown, VSCodeOption } from '@vscode/webview-ui-toolkit/react'
 import classNames from 'classnames'
 
-import { ChatModelDropdownMenuProps } from '@sourcegraph/cody-ui/src/Chat'
-import { AnthropicLogo, MistralLogo, OpenAILogo } from '@sourcegraph/cody-ui/src/icons/LLMProviderIcons'
+import { AnthropicLogo, MistralLogo, OpenAILogo } from '../icons/LLMProviderIcons'
 
 import { getVSCodeAPI } from '../utils/VSCodeApi'
 
+import type { ModelProvider } from '@sourcegraph/cody-shared'
+import type { UserAccountInfo } from '../Chat'
 import styles from './ChatModelDropdownMenu.module.css'
 
 type DropdownProps = ComponentProps<typeof VSCodeDropdown>
+
+export interface ChatModelDropdownMenuProps {
+    models: ModelProvider[]
+    disabled: boolean // Disabled when transcript length > 1
+    onCurrentChatModelChange: (model: ModelProvider) => void
+    userInfo: UserAccountInfo
+}
 
 export const ChatModelDropdownMenu: React.FunctionComponent<ChatModelDropdownMenuProps> = ({
     models,
@@ -19,6 +28,7 @@ export const ChatModelDropdownMenu: React.FunctionComponent<ChatModelDropdownMen
     userInfo,
 }) => {
     const [currentModel, setCurrentModel] = useState(models.find(m => m.default) || models[0])
+    const currentModelIndex = models.indexOf(models.find(m => m.default) || models[0])
     const dropdownRef = useRef<DropdownProps>(null)
 
     const isCodyProUser = userInfo.isDotComUser && userInfo.isCodyProUser
@@ -29,7 +39,10 @@ export const ChatModelDropdownMenu: React.FunctionComponent<ChatModelDropdownMen
         (event: any): void => {
             const selectedModel = models[event.target?.selectedIndex]
             if (showCodyProBadge && selectedModel.codyProOnly) {
-                getVSCodeAPI().postMessage({ command: 'links', value: 'https://sourcegraph.com/cody/subscription' })
+                getVSCodeAPI().postMessage({
+                    command: 'links',
+                    value: 'https://sourcegraph.com/cody/subscription',
+                })
                 getVSCodeAPI().postMessage({
                     command: 'event',
                     eventName: 'CodyVSCodeExtension:upgradeLLMChoiceCTA:clicked',
@@ -77,6 +90,7 @@ export const ChatModelDropdownMenu: React.FunctionComponent<ChatModelDropdownMen
                 disabled={disabled}
                 className={styles.dropdownContainer}
                 onChange={handleChange}
+                selectedIndex={currentModelIndex}
                 {...(!disabled && enabledDropdownProps)}
             >
                 {models?.map((option, index) => (
@@ -96,12 +110,18 @@ export const ChatModelDropdownMenu: React.FunctionComponent<ChatModelDropdownMen
                                 styles.titleContainer,
                                 isModelDisabled(option.codyProOnly) && styles.disabled
                             )}
-                            title={isEnterpriseUser ? 'Chat model set by your Sourcegraph Enterprise admin' : undefined}
+                            title={
+                                isEnterpriseUser
+                                    ? 'Chat model set by your Sourcegraph Enterprise admin'
+                                    : undefined
+                            }
                         >
                             <span className={styles.title}>{option.title}</span>
                             <span className={styles.provider}>{` by ${option.provider}`}</span>
                         </span>
-                        {isModelDisabled(option.codyProOnly) && <span className={styles.badge}>Pro</span>}
+                        {isModelDisabled(option.codyProOnly) && (
+                            <span className={styles.badge}>Pro</span>
+                        )}
                     </VSCodeOption>
                 ))}
 
@@ -116,7 +136,7 @@ export const ChatModelDropdownMenu: React.FunctionComponent<ChatModelDropdownMen
     )
 }
 
-export const ProviderIcon = ({ model, className }: { model: string; className?: string }): JSX.Element => {
+const ProviderIcon = ({ model, className }: { model: string; className?: string }): JSX.Element => {
     if (model.startsWith('openai/')) {
         return <OpenAILogo className={className} />
     }

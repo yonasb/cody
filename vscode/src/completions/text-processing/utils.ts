@@ -4,6 +4,7 @@ import * as vscode from 'vscode'
 import { getLanguageConfig } from '../../tree-sitter/language'
 import { logCompletionBookkeepingEvent } from '../logger'
 
+import type { Position } from 'vscode'
 import { isAlmostTheSameString } from './string-comparator'
 
 export const OPENING_CODE_TAG = '<CODE5711>'
@@ -50,7 +51,7 @@ export function fixBadCompletionStart(completion: string): string {
  * the Claude API, which is highly sensitive to whitespace and performs better when there
  * is no trailing whitespace in its input.
  */
-export interface TrimmedString {
+interface TrimmedString {
     trimmed: string
     leadSpace: string
     rearSpace: string
@@ -102,7 +103,7 @@ export function getHeadAndTail(s: string): PrefixComponents {
         headAndTail = { head: trimSpace(s), tail: trimSpace(s), overlap: s }
     } else {
         headAndTail = {
-            head: trimSpace(lines.slice(0, tailStart).join('\n') + '\n'),
+            head: trimSpace(`${lines.slice(0, tailStart).join('\n')}\n`),
             tail: trimSpace(lines.slice(tailStart).join('\n')),
         }
     }
@@ -131,7 +132,12 @@ export function getHeadAndTail(s: string): PrefixComponents {
 function trimSpace(s: string): TrimmedString {
     const trimmed = s.trim()
     const headEnd = s.indexOf(trimmed)
-    return { raw: s, trimmed, leadSpace: s.slice(0, headEnd), rearSpace: s.slice(headEnd + trimmed.length) }
+    return {
+        raw: s,
+        trimmed,
+        leadSpace: s.slice(0, headEnd),
+        rearSpace: s.slice(headEnd + trimmed.length),
+    }
 }
 
 /*
@@ -141,7 +147,12 @@ function trimSpace(s: string): TrimmedString {
  * Oftentimes, the last couple of lines of the completion may match against the suffix
  * (the code following the cursor).
  */
-export function trimUntilSuffix(insertion: string, prefix: string, suffix: string, languageId: string): string {
+export function trimUntilSuffix(
+    insertion: string,
+    prefix: string,
+    suffix: string,
+    languageId: string
+): string {
     const config = getLanguageConfig(languageId)
 
     insertion = insertion.trimEnd()
@@ -167,6 +178,10 @@ export function trimUntilSuffix(insertion: string, prefix: string, suffix: strin
     for (let i = insertionLines.length - 1; i >= 0; i--) {
         let line = insertionLines[i]
 
+        if (line.length === 0) {
+            continue
+        }
+
         // Include the current indentation of the prefix in the first line
         if (i === 0) {
             line = prefixIndentationWithFirstCompletionLine + line
@@ -186,7 +201,11 @@ export function trimUntilSuffix(insertion: string, prefix: string, suffix: strin
             break
         }
 
-        if (isSameIndentation && isAlmostTheSameString(line, firstNonEmptySuffixLine)) {
+        if (
+            isSameIndentation &&
+            (isAlmostTheSameString(line, firstNonEmptySuffixLine) ||
+                firstNonEmptySuffixLine.startsWith(line))
+        ) {
             cutOffIndex = i
             break
         }
@@ -229,13 +248,6 @@ export function collapseDuplicativeWhitespace(prefix: string, completion: string
     return completion
 }
 
-/**
- * Trims trailing whitespace on the last line if the last line is whitespace-only.
- */
-export function trimEndOnLastLineIfWhitespaceOnly(text: string): string {
-    return text.replace(/(\r?\n)\s+$/, '$1')
-}
-
 export function removeTrailingWhitespace(text: string): string {
     return text
         .split('\n')
@@ -243,7 +255,7 @@ export function removeTrailingWhitespace(text: string): string {
         .join('\n')
 }
 
-export const INDENTATION_REGEX = /^[\t ]*/
+const INDENTATION_REGEX = /^[\t ]*/
 export const OPENING_BRACKET_REGEX = /([([{])$/
 export const FUNCTION_OR_METHOD_INVOCATION_REGEX = /\b[^()]+\((.*)\)$/g
 export const FUNCTION_KEYWORDS = /^(function|def|fn)/g
@@ -255,10 +267,11 @@ export const BRACKET_PAIR = {
     '<': '>',
 } as const
 export type OpeningBracket = keyof typeof BRACKET_PAIR
-export type ClosingBracket = (typeof BRACKET_PAIR)[OpeningBracket]
 
 export function getEditorTabSize(): number {
-    return vscode.window.activeTextEditor ? (vscode.window.activeTextEditor.options.tabSize as number) : 2
+    return vscode.window.activeTextEditor
+        ? (vscode.window.activeTextEditor.options.tabSize as number)
+        : 2
 }
 
 /**
@@ -308,7 +321,10 @@ function shouldIncludeClosingLineBasedOnBrackets(
  * Only include a closing line (e.g. `}`) if the block is empty yet if the block is already closed.
  * We detect this by looking at the indentation of the next non-empty line.
  */
-export function shouldIncludeClosingLine(prefixIndentationWithFirstCompletionLine: string, suffix: string): boolean {
+export function shouldIncludeClosingLine(
+    prefixIndentationWithFirstCompletionLine: string,
+    suffix: string
+): boolean {
     const includeClosingLineBasedOnBrackets = shouldIncludeClosingLineBasedOnBrackets(
         prefixIndentationWithFirstCompletionLine,
         suffix
@@ -350,7 +366,11 @@ export function getNextNonEmptyLine(suffix: string): string {
     if (nextLf === -1 && nextCrLf === -1) {
         return ''
     }
-    return lines(suffix.slice(nextCrLf >= 0 ? nextCrLf + 2 : nextLf + 1)).find(line => line.trim().length > 0) ?? ''
+    return (
+        lines(suffix.slice(nextCrLf >= 0 ? nextCrLf + 2 : nextLf + 1)).find(
+            line => line.trim().length > 0
+        ) ?? ''
+    )
 }
 
 export function getPrevNonEmptyLine(prefix: string): string {
@@ -360,9 +380,55 @@ export function getPrevNonEmptyLine(prefix: string): string {
     if (prevLf === -1 && prevCrLf === -1) {
         return ''
     }
-    return findLast(lines(prefix.slice(0, prevCrLf >= 0 ? prevCrLf : prevLf)), line => line.trim().length > 0) ?? ''
+    return (
+        findLast(
+            lines(prefix.slice(0, prevCrLf >= 0 ? prevCrLf : prevLf)),
+            line => line.trim().length > 0
+        ) ?? ''
+    )
 }
 
 export function lines(text: string): string[] {
     return text.split(/\r?\n/)
+}
+
+export function hasCompleteFirstLine(text: string): boolean {
+    const lastNewlineIndex = text.indexOf('\n')
+    return lastNewlineIndex !== -1
+}
+
+export function lastNLines(text: string, n: number): string {
+    const lines = text.split('\n')
+    return lines.slice(Math.max(0, lines.length - n)).join('\n')
+}
+
+export function removeIndentation(text: string): string {
+    const lines = text.split('\n')
+    return lines.map(line => line.replace(INDENTATION_REGEX, '')).join('\n')
+}
+
+export function getPositionAfterTextInsertion(position: Position, text?: string): Position {
+    if (!text || text.length === 0) {
+        return position
+    }
+
+    const insertedLines = lines(text)
+
+    const updatedPosition =
+        insertedLines.length <= 1
+            ? position.translate(0, Math.max(getFirstLine(text).length, 0))
+            : new vscode.Position(position.line + insertedLines.length - 1, insertedLines.at(-1)!.length)
+
+    return updatedPosition
+}
+
+export function getSuffixAfterFirstNewline(suffix: string): string {
+    const firstNlInSuffix = suffix.indexOf('\n')
+
+    // When there is no next line, the suffix should be empty
+    if (firstNlInSuffix === -1) {
+        return ''
+    }
+
+    return suffix.slice(firstNlInSuffix)
 }

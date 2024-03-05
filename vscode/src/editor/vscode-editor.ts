@@ -1,49 +1,32 @@
 import * as vscode from 'vscode'
 
-import type {
-    ActiveTextEditor,
-    ActiveTextEditorDiagnostic,
-    ActiveTextEditorDiagnosticType,
-    ActiveTextEditorSelection,
-    ActiveTextEditorSelectionRange,
-    ActiveTextEditorViewControllers,
-    ActiveTextEditorVisibleContent,
-    Editor,
-} from '@sourcegraph/cody-shared/src/editor'
-import { SURROUNDING_LINES } from '@sourcegraph/cody-shared/src/prompt/constants'
+import {
+    type ActiveTextEditor,
+    type ActiveTextEditorDiagnostic,
+    type ActiveTextEditorDiagnosticType,
+    type ActiveTextEditorSelection,
+    type ActiveTextEditorVisibleContent,
+    type Editor,
+    type RangeData,
+    SURROUNDING_LINES,
+    isCodyIgnoredFile,
+} from '@sourcegraph/cody-shared'
 
-import { CommandsController } from '../commands/CommandsController'
-import { FixupController } from '../non-stop/FixupController'
+import { CommandCodeLenses } from '../commands/services/code-lenses'
+import { getEditor } from './active-editor'
 
-import { getActiveEditor } from './active-editor'
-import { EditorCodeLenses } from './EditorCodeLenses'
-import { getSmartSelection } from './utils'
-
-export class VSCodeEditor implements Editor<FixupController, CommandsController> {
-    constructor(public readonly controllers: ActiveTextEditorViewControllers<FixupController, CommandsController>) {
+export class VSCodeEditor implements Editor {
+    constructor() {
         /**
-         * Callback function that calls getActiveEditor() whenever the visible text editors change in VS Code.
+         * Callback function that calls getEditor().active whenever the visible text editors change in VS Code.
          * This allows tracking of the currently active text editor even when focus moves to something like a webview panel.
          */
-        vscode.window.onDidChangeActiveTextEditor(() => getActiveEditor())
-        new EditorCodeLenses()
-    }
-
-    public get fileName(): string {
-        return getActiveEditor()?.document.fileName ?? ''
-    }
-
-    /**
-     * @deprecated Use {@link VSCodeEditor.getWorkspaceRootUri} instead
-    /** NOTE DO NOT UES - this does not work with chat webview panel
-     */
-    public getWorkspaceRootPath(): string | null {
-        const uri = this.getWorkspaceRootUri()
-        return uri?.scheme === 'file' ? uri.fsPath : null
+        vscode.window.onDidChangeActiveTextEditor(() => getEditor())
+        new CommandCodeLenses()
     }
 
     public getWorkspaceRootUri(): vscode.Uri | null {
-        const uri = getActiveEditor()?.document?.uri
+        const uri = getEditor().active?.document?.uri
         if (uri) {
             const wsFolder = vscode.workspace.getWorkspaceFolder(uri)
             if (wsFolder) {
@@ -64,14 +47,15 @@ export class VSCodeEditor implements Editor<FixupController, CommandsController>
 
         return {
             content: documentText,
-            filePath: documentUri.fsPath,
             fileUri: documentUri,
             selectionRange: documentSelection.isEmpty ? undefined : documentSelection,
+            ignored: isCodyIgnoredFile(activeEditor.document.uri),
         }
     }
 
     private getActiveTextEditorInstance(): vscode.TextEditor | null {
-        const activeEditor = getActiveEditor()
+        const editor = getEditor()
+        const activeEditor = editor.ignored ? null : getEditor().active
         return activeEditor ?? null
     }
 
@@ -87,77 +71,9 @@ export class VSCodeEditor implements Editor<FixupController, CommandsController>
         return this.createActiveTextEditorSelection(activeEditor, selection)
     }
 
-    /**
-     * Gets the current smart selection for the active text editor.
-     *
-     * Checks if there is an existing selection and returns that if it exists.
-     * Otherwise tries to get the folding range containing the cursor position.
-     *
-     * Returns null if no selection can be determined.
-     * @returns The smart selection for the active editor, or null if none can be determined.
-     */
-    public async getActiveTextEditorSmartSelection(): Promise<ActiveTextEditorSelection | null> {
-        const activeEditor = this.getActiveTextEditorInstance()
-        if (!activeEditor) {
-            return null
-        }
-        const selection = activeEditor.selection
-        if (!selection.start) {
-            return null
-        }
-
-        if (selection && !selection?.start.isEqual(selection.end)) {
-            return this.createActiveTextEditorSelection(activeEditor, selection)
-        }
-
-        // Get selection for current folding range of cursor
-        const activeCursorPosition = selection.start.line
-        const foldingRange = await getSmartSelection(activeEditor.document.uri, activeCursorPosition)
-        if (foldingRange) {
-            return this.createActiveTextEditorSelection(activeEditor, foldingRange)
-        }
-
-        return null
-    }
-
-    public getActiveTextEditorSelectionOrEntireFile(): ActiveTextEditorSelection | null {
-        const activeEditor = this.getActiveTextEditorInstance()
-        if (!activeEditor) {
-            return null
-        }
-        let selection = activeEditor.selection
-        if (!selection || selection.isEmpty) {
-            selection = new vscode.Selection(0, 0, activeEditor.document.lineCount, 0)
-        }
-        return this.createActiveTextEditorSelection(activeEditor, selection)
-    }
-
-    public getActiveTextEditorSelectionOrVisibleContent(): ActiveTextEditorSelection | null {
-        const activeEditor = this.getActiveTextEditorInstance()
-        if (!activeEditor) {
-            return null
-        }
-        let selection = activeEditor.selection
-        if (selection && !selection.isEmpty) {
-            return this.createActiveTextEditorSelection(activeEditor, selection)
-        }
-        const visibleRanges = activeEditor.visibleRanges
-        if (visibleRanges.length === 0) {
-            return null
-        }
-
-        const visibleRange = visibleRanges[0]
-        selection = new vscode.Selection(visibleRange.start.line, 0, visibleRange.end.line + 1, 0)
-        if (!selection || selection.isEmpty) {
-            return null
-        }
-
-        return this.createActiveTextEditorSelection(activeEditor, selection)
-    }
-
     public async getTextEditorContentForFile(
         fileUri: vscode.Uri,
-        selectionRange?: ActiveTextEditorSelectionRange
+        selectionRange?: RangeData
     ): Promise<string | undefined> {
         if (!fileUri) {
             return undefined
@@ -179,7 +95,9 @@ export class VSCodeEditor implements Editor<FixupController, CommandsController>
         return doc.getText(range)
     }
 
-    private getActiveTextEditorDiagnosticType(severity: vscode.DiagnosticSeverity): ActiveTextEditorDiagnosticType {
+    private getActiveTextEditorDiagnosticType(
+        severity: vscode.DiagnosticSeverity
+    ): ActiveTextEditorDiagnosticType {
         switch (severity) {
             case vscode.DiagnosticSeverity.Error:
                 return 'error'
@@ -195,7 +113,7 @@ export class VSCodeEditor implements Editor<FixupController, CommandsController>
     public getActiveTextEditorDiagnosticsForRange({
         start,
         end,
-    }: ActiveTextEditorSelectionRange): ActiveTextEditorDiagnostic[] | null {
+    }: RangeData): ActiveTextEditorDiagnostic[] | null {
         const activeEditor = this.getActiveTextEditorInstance()
         if (!activeEditor) {
             return null
@@ -227,16 +145,18 @@ export class VSCodeEditor implements Editor<FixupController, CommandsController>
             )
         )
         const followingText = activeEditor.document.getText(
-            new vscode.Range(selection.end, new vscode.Position(selection.end.line + SURROUNDING_LINES, 0))
+            new vscode.Range(
+                selection.end,
+                new vscode.Position(selection.end.line + SURROUNDING_LINES, 0)
+            )
         )
 
         return {
-            fileName: vscode.workspace.asRelativePath(activeEditor.document.uri.fsPath),
+            fileUri: activeEditor.document.uri,
             selectedText: activeEditor.document.getText(selection),
             precedingText,
             followingText,
             selectionRange: selection,
-            fileUri: activeEditor.document.uri,
         }
     }
 
@@ -260,38 +180,9 @@ export class VSCodeEditor implements Editor<FixupController, CommandsController>
         )
 
         return {
-            fileName: vscode.workspace.asRelativePath(activeEditor.document.uri.fsPath),
             fileUri: activeEditor.document.uri,
             content,
         }
-    }
-
-    public async replaceSelection(fileName: string, selectedText: string, replacement: string): Promise<void> {
-        const activeEditor = this.getActiveTextEditorInstance()
-        if (!activeEditor || vscode.workspace.asRelativePath(activeEditor.document.uri.fsPath) !== fileName) {
-            // TODO: should return something indicating success or failure
-            console.error('Missing file')
-            return
-        }
-        const selection = activeEditor.selection
-        if (!selection) {
-            console.error('Missing selection')
-            return
-        }
-        if (activeEditor.document.getText(selection) !== selectedText) {
-            // TODO: Be robust to this.
-            await vscode.window.showInformationMessage(
-                'The selection changed while Cody was working. The text will not be edited.'
-            )
-            return
-        }
-
-        // Editing the document
-        await activeEditor.edit(edit => {
-            edit.replace(selection, replacement)
-        })
-
-        return
     }
 
     public async createWorkspaceFile(content: string, uri?: vscode.Uri): Promise<void> {
@@ -314,27 +205,7 @@ export class VSCodeEditor implements Editor<FixupController, CommandsController>
         }
     }
 
-    public async showQuickPick(labels: string[]): Promise<string | undefined> {
-        const label = await vscode.window.showQuickPick(labels)
-        return label
-    }
-
     public async showWarningMessage(message: string): Promise<void> {
         await vscode.window.showWarningMessage(message)
-    }
-
-    public async showInputBox(prompt?: string): Promise<string | undefined> {
-        return vscode.window.showInputBox({
-            placeHolder: prompt || 'Enter here...',
-        })
-    }
-
-    // TODO: When Non-Stop Fixup doesn't depend directly on the chat view,
-    // move the recipe to vscode and remove this entrypoint.
-    public async didReceiveFixupText(id: string, text: string, state: 'streaming' | 'complete'): Promise<void> {
-        if (!this.controllers.fixups) {
-            throw new Error('no fixup controller')
-        }
-        await this.controllers.fixups.didReceiveFixupText(id, text, state)
     }
 }

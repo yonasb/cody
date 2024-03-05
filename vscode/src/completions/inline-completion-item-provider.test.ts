@@ -1,21 +1,25 @@
 import dedent from 'dedent'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import * as vscode from 'vscode'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import type * as vscode from 'vscode'
 
-import { RateLimitError } from '@sourcegraph/cody-shared/src/sourcegraph-api/errors'
-import { graphqlClient } from '@sourcegraph/cody-shared/src/sourcegraph-api/graphql'
-import { GraphQLAPIClientConfig } from '@sourcegraph/cody-shared/src/sourcegraph-api/graphql/client'
+import { type GraphQLAPIClientConfig, RateLimitError, graphqlClient } from '@sourcegraph/cody-shared'
 
+import type { AuthStatus } from '../chat/protocol'
 import { localStorage } from '../services/LocalStorageProvider'
 import { vsCodeMocks } from '../testutils/mocks'
+import { withPosixPaths } from '../testutils/textDocument'
 
-import { getInlineCompletions, InlineCompletionsResultSource } from './get-inline-completions'
+import { SupportedLanguage } from '../tree-sitter/grammars'
+import { updateParseTreeCache } from '../tree-sitter/parse-tree-cache'
+import { getParser, resetParsersCache } from '../tree-sitter/parser'
+import { InlineCompletionsResultSource, getInlineCompletions } from './get-inline-completions'
+import { initCompletionProviderConfig } from './get-inline-completions-tests/helpers'
 import { InlineCompletionItemProvider } from './inline-completion-item-provider'
+import type { CompletionLogID } from './logger'
 import * as CompletionLogger from './logger'
-import { CompletionLogID } from './logger'
 import { createProviderConfig } from './providers/anthropic'
-import { documentAndPosition } from './test-helpers'
-import { InlineCompletionItem } from './types'
+import { documentAndPosition, initTreeSitterParser } from './test-helpers'
+import type { InlineCompletionItem } from './types'
 
 vi.mock('vscode', () => ({
     ...vsCodeMocks,
@@ -26,16 +30,28 @@ vi.mock('vscode', () => ({
             return null
         },
     },
-    window: {
-        ...vsCodeMocks.window,
-        visibleTextEditors: [],
-        tabGroups: { all: [] },
-    },
 }))
 
 const DUMMY_CONTEXT: vscode.InlineCompletionContext = {
     selectedCompletionInfo: undefined,
     triggerKind: vsCodeMocks.InlineCompletionTriggerKind.Automatic,
+}
+
+const DUMMY_AUTH_STATUS: AuthStatus = {
+    endpoint: 'https://fastsourcegraph.com',
+    isDotCom: true,
+    isLoggedIn: true,
+    showInvalidAccessTokenError: false,
+    authenticated: true,
+    hasVerifiedEmail: true,
+    requiresVerifiedEmail: true,
+    siteHasCodyEnabled: true,
+    siteVersion: '1234',
+    primaryEmail: 'heisenberg@exmaple.com',
+    username: 'uwu',
+    displayName: 'w.w.',
+    avatarURL: '',
+    userCanUpgrade: false,
 }
 
 graphqlClient.onConfigurationChange({} as unknown as GraphQLAPIClientConfig)
@@ -50,14 +66,13 @@ class MockableInlineCompletionItemProvider extends InlineCompletionItemProvider 
             // Most of these are just passed directly to `getInlineCompletions`, which we've mocked, so
             // we can just make them `null`.
             //
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-explicit-any
+
             statusBar: null as any,
             providerConfig: createProviderConfig({
-                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-explicit-any
                 client: null as any,
             }),
             triggerNotice: null,
-            contextStrategy: 'none',
+            authStatus: DUMMY_AUTH_STATUS,
             ...superArgs,
         })
         this.getInlineCompletions = mockGetInlineCompletions
@@ -67,6 +82,10 @@ class MockableInlineCompletionItemProvider extends InlineCompletionItemProvider 
 }
 
 describe('InlineCompletionItemProvider', () => {
+    beforeAll(async () => {
+        await initCompletionProviderConfig({})
+    })
+
     it('returns results that span the whole line', async () => {
         const { document, position } = documentAndPosition('const foo = █', 'typescript')
         const fn = vi.fn(getInlineCompletions).mockResolvedValue({
@@ -93,6 +112,28 @@ describe('InlineCompletionItemProvider', () => {
         `)
     })
 
+    it('prevents completions inside comments', async () => {
+        try {
+            const { document, position } = documentAndPosition('// █', 'typescript')
+
+            await initTreeSitterParser()
+            const parser = getParser(SupportedLanguage.TypeScript)
+            if (parser) {
+                updateParseTreeCache(document, parser)
+            }
+
+            const fn = vi.fn()
+            const provider = new MockableInlineCompletionItemProvider(fn, {
+                disableInsideComments: true,
+            })
+            const result = await provider.provideInlineCompletionItems(document, position, DUMMY_CONTEXT)
+            expect(result).toBeNull()
+            expect(fn).not.toHaveBeenCalled()
+        } finally {
+            resetParsersCache()
+        }
+    })
+
     it('saves lastInlineCompletionResult', async () => {
         const { document, position } = documentAndPosition(
             dedent`
@@ -103,7 +144,10 @@ describe('InlineCompletionItemProvider', () => {
             'typescript'
         )
 
-        const item: InlineCompletionItem = { insertText: 'test', range: new vsCodeMocks.Range(position, position) }
+        const item: InlineCompletionItem = {
+            insertText: 'test',
+            range: new vsCodeMocks.Range(position, position),
+        }
         const fn = vi.fn(getInlineCompletions).mockResolvedValue({
             logId: '1' as CompletionLogID,
             items: [item],
@@ -120,7 +164,7 @@ describe('InlineCompletionItemProvider', () => {
         fn.mockReset()
 
         // But it is returned and saved.
-        expect(provider.lastCandidate).toMatchInlineSnapshot(`
+        expect(withPosixPaths(provider.lastCandidate!)).toMatchInlineSnapshot(`
           {
             "lastTriggerDocContext": {
               "currentLinePrefix": "const foo = ",
@@ -165,7 +209,6 @@ describe('InlineCompletionItemProvider', () => {
             },
             "uri": {
               "$mid": 1,
-              "external": "file:///test.ts",
               "path": "/test.ts",
               "scheme": "file",
             },
@@ -183,7 +226,9 @@ describe('InlineCompletionItemProvider', () => {
         let localStorageData: { [key: string]: unknown } = {}
         localStorage.setStorage({
             get: (key: string) => localStorageData[key],
-            update: (key: string, value: unknown) => (localStorageData[key] = value),
+            update: (key: string, value: unknown) => {
+                localStorageData[key] = value
+            },
         } as any as vscode.Memento)
 
         beforeEach(() => {
@@ -204,7 +249,11 @@ describe('InlineCompletionItemProvider', () => {
             const provider = new MockableInlineCompletionItemProvider(fn, {
                 triggerNotice,
             })
-            const completions = await provider.provideInlineCompletionItems(document, position, DUMMY_CONTEXT)
+            const completions = await provider.provideInlineCompletionItems(
+                document,
+                position,
+                DUMMY_CONTEXT
+            )
             expect(completions).not.toBeNull()
             expect(completions?.items).not.toHaveLength(0)
 
@@ -222,9 +271,9 @@ describe('InlineCompletionItemProvider', () => {
         })
 
         it('does not triggers notice the first time an inline complation is accepted if not a new install', async () => {
-            await localStorage.setChatHistory({
+            await localStorage.setChatHistory(DUMMY_AUTH_STATUS, {
                 chat: { a: null as any },
-                input: [''],
+                input: [{ inputText: '', inputContextFiles: [] }],
             })
 
             const { document, position } = documentAndPosition('const foo = █', 'typescript')
@@ -240,7 +289,11 @@ describe('InlineCompletionItemProvider', () => {
             const provider = new MockableInlineCompletionItemProvider(fn, {
                 triggerNotice,
             })
-            const completions = await provider.provideInlineCompletionItems(document, position, DUMMY_CONTEXT)
+            const completions = await provider.provideInlineCompletionItems(
+                document,
+                position,
+                DUMMY_CONTEXT
+            )
             expect(completions).not.toBeNull()
             expect(completions?.items).not.toHaveLength(0)
 
@@ -421,7 +474,9 @@ describe('InlineCompletionItemProvider', () => {
 
             const fn = vi.fn(getInlineCompletions).mockResolvedValue({
                 logId: '1' as CompletionLogID,
-                items: [{ insertText: "log('hello world!')", range: new vsCodeMocks.Range(1, 12, 1, 12) }],
+                items: [
+                    { insertText: "log('hello world!')", range: new vsCodeMocks.Range(1, 12, 1, 12) },
+                ],
                 source: InlineCompletionsResultSource.Network,
             })
             const provider = new MockableInlineCompletionItemProvider(fn)
@@ -498,6 +553,52 @@ describe('InlineCompletionItemProvider', () => {
             expect(fn).not.toHaveBeenCalled()
             expect(items).toBe(null)
         })
+
+        it('passes forward the last accepted completion item', async () => {
+            const { document, position } = documentAndPosition(
+                dedent`
+                    function foo() {
+                        console.l█
+                    }
+                `,
+                'typescript'
+            )
+            const fn = vi.fn(getInlineCompletions).mockResolvedValue({
+                logId: '1' as CompletionLogID,
+                items: [{ insertText: 'og();', range: new vsCodeMocks.Range(position, position) }],
+                source: InlineCompletionsResultSource.Network,
+            })
+
+            const provider = new MockableInlineCompletionItemProvider(fn)
+            const completions = await provider.provideInlineCompletionItems(
+                document,
+                position,
+                DUMMY_CONTEXT
+            )
+
+            await provider.handleDidAcceptCompletionItem(completions!.items[0]!)
+
+            const { document: updatedDocument, position: updatedPosition } = documentAndPosition(
+                dedent`
+                    function foo() {
+                        console.log();█
+                    }
+                `,
+                'typescript'
+            )
+
+            await provider.provideInlineCompletionItems(updatedDocument, updatedPosition, DUMMY_CONTEXT)
+
+            expect(fn).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    lastAcceptedCompletionItem: expect.objectContaining({
+                        analyticsItem: expect.objectContaining({
+                            insertText: 'og();',
+                        }),
+                    }),
+                })
+            )
+        })
     })
 
     describe('error reporting', () => {
@@ -514,25 +615,28 @@ describe('InlineCompletionItemProvider', () => {
             const { document, position } = documentAndPosition('█')
             const fn = vi
                 .fn(getInlineCompletions)
-                .mockRejectedValue(new RateLimitError('autocompletions', 'rate limited oh no', false, 1234, '86400'))
+                .mockRejectedValue(
+                    new RateLimitError('autocompletions', 'rate limited oh no', false, 1234, '86400')
+                )
             const addError = vi.fn()
             const provider = new MockableInlineCompletionItemProvider(fn, {
                 statusBar: { addError, hasError: () => addError.mock.calls.length } as any,
             })
 
-            await expect(provider.provideInlineCompletionItems(document, position, DUMMY_CONTEXT)).rejects.toThrow(
-                'rate limited oh no'
-            )
+            await expect(
+                provider.provideInlineCompletionItems(document, position, DUMMY_CONTEXT)
+            ).rejects.toThrow('rate limited oh no')
             expect(addError).toHaveBeenCalledWith(
                 expect.objectContaining({
                     title: 'Cody Autocomplete Disabled Due to Rate Limit',
-                    description: "You've used all autocompletions for today. Usage will reset tomorrow at 1:00 PM",
+                    description:
+                        "You've used all autocompletions for today. Usage will reset tomorrow at 1:00 PM",
                 })
             )
 
-            await expect(provider.provideInlineCompletionItems(document, position, DUMMY_CONTEXT)).rejects.toThrow(
-                'rate limited oh no'
-            )
+            await expect(
+                provider.provideInlineCompletionItems(document, position, DUMMY_CONTEXT)
+            ).rejects.toThrow('rate limited oh no')
             expect(addError).toHaveBeenCalledTimes(1)
         })
 
@@ -542,20 +646,22 @@ describe('InlineCompletionItemProvider', () => {
                 const { document, position } = documentAndPosition('█')
                 const fn = vi
                     .fn(getInlineCompletions)
-                    .mockRejectedValue(new RateLimitError('autocompletions', 'rate limited oh no', canUpgrade, 1234))
+                    .mockRejectedValue(
+                        new RateLimitError('autocompletions', 'rate limited oh no', canUpgrade, 1234)
+                    )
                 const addError = vi.fn()
                 const provider = new MockableInlineCompletionItemProvider(fn, {
                     statusBar: { addError, hasError: () => addError.mock.calls.length } as any,
                 })
 
-                await expect(provider.provideInlineCompletionItems(document, position, DUMMY_CONTEXT)).rejects.toThrow(
-                    'rate limited oh no'
-                )
+                await expect(
+                    provider.provideInlineCompletionItems(document, position, DUMMY_CONTEXT)
+                ).rejects.toThrow('rate limited oh no')
                 expect(addError).toHaveBeenCalledWith(
                     canUpgrade
                         ? expect.objectContaining({
                               title: 'Upgrade to Continue Using Cody Autocomplete',
-                              description: "You've used all 1234 autocompletions for the month.",
+                              description: "You've used all autocompletions for the month.",
                           })
                         : expect.objectContaining({
                               title: 'Cody Autocomplete Disabled Due to Rate Limit',
@@ -563,9 +669,9 @@ describe('InlineCompletionItemProvider', () => {
                           })
                 )
 
-                await expect(provider.provideInlineCompletionItems(document, position, DUMMY_CONTEXT)).rejects.toThrow(
-                    'rate limited oh no'
-                )
+                await expect(
+                    provider.provideInlineCompletionItems(document, position, DUMMY_CONTEXT)
+                ).rejects.toThrow('rate limited oh no')
                 expect(addError).toHaveBeenCalledTimes(1)
             }
         )
@@ -579,9 +685,9 @@ describe('InlineCompletionItemProvider', () => {
                 statusBar: { addError, hasError: () => addError.mock.calls.length } as any,
             })
 
-            await expect(provider.provideInlineCompletionItems(document, position, DUMMY_CONTEXT)).rejects.toThrow(
-                'unexpected'
-            )
+            await expect(
+                provider.provideInlineCompletionItems(document, position, DUMMY_CONTEXT)
+            ).rejects.toThrow('unexpected')
             expect(addError).toHaveBeenCalledWith(
                 expect.objectContaining({
                     title: 'Cody Autocomplete Encountered an Unexpected Error',
@@ -589,15 +695,15 @@ describe('InlineCompletionItemProvider', () => {
                 })
             )
 
-            await expect(provider.provideInlineCompletionItems(document, position, DUMMY_CONTEXT)).rejects.toThrow(
-                'unexpected'
-            )
+            await expect(
+                provider.provideInlineCompletionItems(document, position, DUMMY_CONTEXT)
+            ).rejects.toThrow('unexpected')
             expect(addError).toHaveBeenCalledTimes(1)
 
             error = new Error('different')
-            await expect(provider.provideInlineCompletionItems(document, position, DUMMY_CONTEXT)).rejects.toThrow(
-                'different'
-            )
+            await expect(
+                provider.provideInlineCompletionItems(document, position, DUMMY_CONTEXT)
+            ).rejects.toThrow('different')
             expect(addError).toHaveBeenCalledWith(
                 expect.objectContaining({
                     title: 'Cody Autocomplete Encountered an Unexpected Error',

@@ -5,13 +5,13 @@ import { SupportedLanguage } from '../../tree-sitter/grammars'
 import { resetParsersCache } from '../../tree-sitter/parser'
 import { completion, initTreeSitterParser } from '../test-helpers'
 
-import { getInlineCompletionsInsertText, params, T } from './helpers'
+import { T, getInlineCompletionsInsertText, params } from './helpers'
 
 const cases = [true, false]
 
 // Run truncation tests for both strategies: indentation-based and tree-sitter-based.
 // We cannot use `describe.each` here because `toMatchInlineSnapshot` is not supported with it.
-cases.forEach(isTreeSitterEnabled => {
+for (const isTreeSitterEnabled of cases) {
     const label = isTreeSitterEnabled ? 'enabled' : 'disabled'
 
     describe(`[getInlineCompletions] multiline truncation with tree-sitter ${label}`, () => {
@@ -301,7 +301,10 @@ cases.forEach(isTreeSitterEnabled => {
                             console.log('bar')
                         }┤
                     ┴┴┴┴`,
-                        ]
+                        ],
+                        {
+                            providerOptions: { n: 2 },
+                        }
                     )
                 )
 
@@ -581,33 +584,60 @@ cases.forEach(isTreeSitterEnabled => {
             if (isTreeSitterEnabled) {
                 it('stops when the next non-empty line of the suffix matches', async () => {
                     expect(
-                        await getInlineCompletionsInsertText(
-                            params(
-                                dedent`
+                        (
+                            await getInlineCompletionsInsertText(
+                                params(
+                                    dedent`
                                 function myFunction() {
                                     █
                                 }
                         `,
-                                [
-                                    completion`
+                                    [
+                                        completion`
                                 ├function nestedFunction() {
                                     console.log('one')
                                 }
 
                                 nestedFunction()
                                 }┤`,
-                                ]
+                                    ]
+                                )
                             )
-                        )
+                        )[0]
                     ).toMatchInlineSnapshot(`
-                  [
-                    "function nestedFunction() {
-                      console.log('one')
-                  }
+                      "function nestedFunction() {
+                          console.log('one')
+                      }
 
-                  nestedFunction()",
-                  ]
-                `)
+                      nestedFunction()"
+                    `)
+                })
+
+                it('stops when the next non-empty line of the suffix starts with the last completion line', async () => {
+                    expect(
+                        (
+                            await getInlineCompletionsInsertText(
+                                params(
+                                    dedent`
+                                    const controller = {
+                                        set(value) {
+                                            █
+                                        },
+                                        get() {
+                                            return 1
+                                        }
+                                    }`,
+                                    [
+                                        completion`
+                                            ├this.value = value
+                                        },
+                                        whatever() ┤
+                                    ┴┴┴┴`,
+                                    ]
+                                )
+                            )
+                        )[0]
+                    ).toBe('this.value = value')
                 })
 
                 it('truncates multiline completions with inconsistent indentation', async () => {
@@ -681,7 +711,74 @@ cases.forEach(isTreeSitterEnabled => {
                       }"
                 `)
                 })
+
+                it('handles missing brackets gracefully to truncate the completion correctly', async () => {
+                    const requestParams = params('console.log(1); const █', [completion``], {
+                        *completionResponseGenerator() {
+                            yield completion`
+                                ├MyCoolObject = {
+                                constructor() {`
+
+                            yield completion`
+                                ├MyCoolObject = {
+                                constructor() {
+                                    console.log(1)
+
+                                    if (false`
+
+                            yield completion`
+                                ├MyCoolObject = {
+                                constructor() {
+                                    console.log(1)
+
+                                    if (false) {
+                                        console.log(2)
+                                    }
+
+                                    const result = {
+                                        value:`
+
+                            yield completion`
+                                ├MyCoolObject = {
+                                constructor() {
+                                    console.log(1)
+
+                                    if (false) {
+                                        console.log(2)
+                                    }
+
+                                    const result = {
+                                        value: true
+                                    }
+
+                                    return result
+                                }
+                            }
+                            console.log(5)┤`
+                        },
+                        configuration: { autocompleteExperimentalDynamicMultilineCompletions: true },
+                    })
+
+                    const [insertText] = await getInlineCompletionsInsertText(requestParams)
+                    expect(insertText).toMatchInlineSnapshot(`
+                      "MyCoolObject = {
+                          constructor() {
+                              console.log(1)
+
+                              if (false) {
+                                  console.log(2)
+                              }
+
+                              const result = {
+                                  value: true
+                              }
+
+                              return result
+                          }
+                      }"
+                    `)
+                })
             }
         })
     })
-})
+}

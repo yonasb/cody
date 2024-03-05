@@ -1,17 +1,20 @@
-import React, { useEffect, useState } from 'react'
+import type React from 'react'
+import { useEffect, useState } from 'react'
 
-import { getVSCodeAPI } from '../utils/VSCodeApi'
+import type { VSCodeWrapper } from '../utils/VSCodeApi'
 
 import { Notice } from './Notice'
 
 import styles from './OnboardingAutocompleteNotice.module.css'
 
-export const OnboardingAutocompleteNotice: React.FunctionComponent = () => {
+export const OnboardingAutocompleteNotice: React.FunctionComponent<{ vscodeAPI: VSCodeWrapper }> = ({
+    vscodeAPI,
+}) => {
     const [showNotice, setShowNotice] = useState<boolean>(false)
 
     // On first render we set up a listener for messages from ChatViewProvider
     useEffect(() => {
-        const cleanup = getVSCodeAPI().onMessage(message => {
+        const cleanup = vscodeAPI.onMessage(message => {
             if (message.type === 'notice' && message.notice.key === 'onboarding-autocomplete') {
                 setShowNotice(true)
             }
@@ -20,7 +23,7 @@ export const OnboardingAutocompleteNotice: React.FunctionComponent = () => {
         return () => {
             cleanup()
         }
-    }, [])
+    }, [vscodeAPI])
 
     if (!showNotice) {
         return undefined
@@ -29,9 +32,9 @@ export const OnboardingAutocompleteNotice: React.FunctionComponent = () => {
     return (
         <Notice
             icon={<Icon />}
-            title={<>Congratulations! You just accepted your first Cody autocomplete.</>}
+            title="Congratulations! You just accepted your first Cody autocomplete."
             linkText="Next: Run a Command →"
-            linkHref="command:cody.action.commands.menu"
+            linkHref="command:cody.menu.commands"
             dismissKey="onboarding-autocomplete"
             className="onboarding-autocomplete"
         />
@@ -39,7 +42,14 @@ export const OnboardingAutocompleteNotice: React.FunctionComponent = () => {
 }
 
 const Icon: React.FunctionComponent = () => (
-    <svg className={styles.icon} width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+    <svg
+        className={styles.icon}
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        xmlns="http://www.w3.org/2000/svg"
+        aria-hidden={true}
+    >
         <path
             d="M18.09 11.77L19.56 18.1L14 14.74L8.44 18.1L9.9 11.77L5 7.5L11.47 6.96L14 1L16.53 6.96L23 7.5L18.09 11.77Z"
             opacity="0.9"

@@ -1,86 +1,67 @@
-import { URI } from 'vscode-uri'
+import type { URI } from 'vscode-uri'
 
-import { ActiveTextEditorSelectionRange } from '../editor'
-import { Message } from '../sourcegraph-api'
+import type { RangeData } from '../common/range'
+import { displayPath } from '../editor/displayPath'
+import type { Message } from '../sourcegraph-api'
 
 // tracked for telemetry purposes. Which context source provided this context file.
 // embeddings: context file returned by the embeddings client
 // user: context file provided by the user explicitly via chat input
 // keyword: the context file returned from local keyword search
 // editor: context file retrieved from the current editor
-export type ContextFileSource = 'embeddings' | 'user' | 'keyword' | 'editor' | 'filename' | 'unified'
+// search: context file returned by symf search
+// selection: selected code from the current editor
+// terminal: output from shell terminal
+// unified: remote search
+export type ContextFileSource =
+    | 'embeddings'
+    | 'user'
+    | 'keyword'
+    | 'editor'
+    | 'filename'
+    | 'search'
+    | 'unified'
+    | 'selection'
+    | 'terminal'
 
 export type ContextFileType = 'file' | 'symbol'
 
 export type SymbolKind = 'class' | 'function' | 'method'
 
-export interface ContextFile {
-    // Name of the context
-    // for file, this is usually the relative path
-    // for symbol, this is usually the fuzzy name of the symbol
-    fileName: string
-
-    content?: string
-
+interface ContextItemCommon {
+    uri: URI
+    range?: RangeData
     repoName?: string
     revision?: string
 
-    // Location
-    uri?: URI
-    path?: {
-        basename?: string
-        dirname?: string
-        relative?: string
-    }
-    range?: ActiveTextEditorSelectionRange
+    /**
+     * For anything other than a file or symbol, the title to display (e.g., "Terminal Output").
+     */
+    title?: string
 
-    // metadata
     source?: ContextFileSource
-    type?: ContextFileType
-    kind?: SymbolKind
+    content?: string
 }
 
-export interface ContextMessage extends Message {
-    file?: ContextFile
-    preciseContext?: PreciseContext
-}
+export type ContextItem = ContextItemFile | ContextItemSymbol
+export type ContextItemFile = ContextItemCommon & { type: 'file' }
+export type ContextItemSymbol = ContextItemCommon & {
+    type: 'symbol'
 
-export interface PreciseContext {
-    symbol: {
-        fuzzyName?: string
-    }
-    hoverText: string[]
-    definitionSnippet: string
-    filePath: string
-    range?: {
-        startLine: number
-        startCharacter: number
-        endLine: number
-        endCharacter: number
-    }
-}
-
-export interface HoverContext {
+    /** The fuzzy name of the symbol (if this represents a symbol). */
     symbolName: string
-    sourceSymbolName?: string
-    content: string[]
-    uri: string
-    range?: {
-        startLine: number
-        startCharacter: number
-        endLine: number
-        endCharacter: number
-    }
+
+    kind: SymbolKind
 }
 
-export interface OldContextMessage extends Message {
-    fileName?: string
+export interface ContextMessage extends Required<Message> {
+    file?: ContextItem
 }
 
 export function getContextMessageWithResponse(
     text: string,
-    file: ContextFile,
-    response: string = 'Ok.',
+    file: ContextItem,
+    response = 'Ok.',
     source: ContextFileSource = 'editor'
 ): ContextMessage[] {
     file.source = file.source || source
@@ -91,17 +72,25 @@ export function getContextMessageWithResponse(
     ]
 }
 
-export function createContextMessageByFile(file: ContextFile, content: string): ContextMessage[] {
-    const code = content || file.content
-    if (!code) {
+export function createContextMessageByFile(item: ContextItem, content: string): ContextMessage[] {
+    if (!content) {
+        content = item.content ?? ''
+    }
+    if (!content) {
         return []
     }
-    // Replace exisiting leading @ if any
-    const fileMessage = `Context from file path @${file.fileName.replace(/^@/, '')}:\n${code}`
-    const symbolMessage = `$${file.fileName} is a ${file.kind} symbol from file path @${file.uri?.fsPath}:\n${code}`
-    const text = file.type === 'symbol' ? symbolMessage : fileMessage
     return [
-        { speaker: 'human', text, file },
+        {
+            speaker: 'human',
+            text:
+                item.type === 'file'
+                    ? `Context from file path ${displayPath(item.uri)}:\n${content}`
+                    : `${item.symbolName} is a ${item.kind} symbol from file path ${displayPath(
+                          item.uri
+                      )}:\n${content}`,
+
+            file: item,
+        },
         { speaker: 'assistant', text: 'OK.' },
     ]
 }

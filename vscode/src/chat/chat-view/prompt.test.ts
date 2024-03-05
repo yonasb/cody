@@ -1,8 +1,9 @@
+import type { ContextItem } from '@sourcegraph/cody-shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as vscode from 'vscode'
-
-import { DefaultPrompter } from './prompt'
+import { PromptBuilder } from '../../prompt-builder'
 import { SimpleChatModel } from './SimpleChatModel'
+import { DefaultPrompter } from './prompt'
 
 describe('DefaultPrompter', () => {
     afterEach(() => {
@@ -13,19 +14,9 @@ describe('DefaultPrompter', () => {
         const chat = new SimpleChatModel('a-model-id')
         chat.addHumanMessage({ text: 'Hello' })
 
-        const {
-            prompt,
-            contextLimitWarnings: warnings,
-            newContextUsed,
-        } = await new DefaultPrompter().makePrompt(
-            chat,
-            {
-                getExplicitContext: () => [],
-                getEnhancedContext: () => Promise.resolve([]),
-            },
-            true,
-            100000
-        )
+        const { prompt, newContextUsed } = await new DefaultPrompter([], () =>
+            Promise.resolve([])
+        ).makePrompt(chat, 100000)
 
         expect(prompt).toMatchInlineSnapshot(`
           [
@@ -43,7 +34,6 @@ describe('DefaultPrompter', () => {
             },
           ]
         `)
-        expect(warnings).toMatchInlineSnapshot('[]')
         expect(newContextUsed).toMatchInlineSnapshot('[]')
     })
 
@@ -59,19 +49,9 @@ describe('DefaultPrompter', () => {
         const chat = new SimpleChatModel('a-model-id')
         chat.addHumanMessage({ text: 'Hello' })
 
-        const {
-            prompt,
-            contextLimitWarnings: warnings,
-            newContextUsed,
-        } = await new DefaultPrompter().makePrompt(
-            chat,
-            {
-                getExplicitContext: () => [],
-                getEnhancedContext: () => Promise.resolve([]),
-            },
-            true,
-            100000
-        )
+        const { prompt, newContextUsed } = await new DefaultPrompter([], () =>
+            Promise.resolve([])
+        ).makePrompt(chat, 100000)
 
         expect(prompt).toMatchInlineSnapshot(`
           [
@@ -89,7 +69,30 @@ describe('DefaultPrompter', () => {
             },
           ]
         `)
-        expect(warnings).toMatchInlineSnapshot('[]')
         expect(newContextUsed).toMatchInlineSnapshot('[]')
+    })
+
+    it('tryAddContext limit should not allow prompt to exceed overall limit', async () => {
+        const overallLimit = 1
+        const promptBuilder = new PromptBuilder(overallLimit)
+        const contextItems: ContextItem[] = [
+            {
+                type: 'file',
+                uri: vscode.Uri.file('/foo/bar'),
+                content: 'foobar',
+            },
+        ]
+
+        const { limitReached, ignored, duplicate, used } = promptBuilder.tryAddContext(
+            contextItems,
+            10_000_000
+        )
+        expect(limitReached).toBeTruthy()
+        expect(ignored).toEqual(contextItems)
+        expect(duplicate).toEqual([])
+        expect(used).toEqual([])
+
+        const prompt = promptBuilder.build()
+        expect(prompt).toMatchInlineSnapshot('[]')
     })
 })

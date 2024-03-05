@@ -32,6 +32,8 @@ function dumpProgram(program: Uint16Array, ops: Op[], a: string, b: string): voi
 }
 */
 
+import type { RangeData } from '@sourcegraph/cody-shared'
+
 function render(ch: string): string {
     return ch === '\n' ? '@' : ch
 }
@@ -159,7 +161,11 @@ function computeChunks(original: string, a: string, b: string): Chunk[] {
             }
             if (i > 1) {
                 // We found a stable chunk.
-                chunks.push([a.slice(lA, lA + i - 1), original.slice(lO, lO + i - 1), b.slice(lB, lB + i - 1)])
+                chunks.push([
+                    a.slice(lA, lA + i - 1),
+                    original.slice(lO, lO + i - 1),
+                    b.slice(lB, lB + i - 1),
+                ])
                 lO += i - 1
                 lA += i - 1
                 lB += i - 1
@@ -169,8 +175,8 @@ function computeChunks(original: string, a: string, b: string): Chunk[] {
             // Skipping unstable pieces.
             for (let nextO = lO + 1; nextO <= original.length; nextO++) {
                 // Find an A
-                let nextA
-                let nextB
+                let nextA: number
+                let nextB: number
                 for (nextA = 1; nextA <= a.length; nextA++) {
                     if (useA[nextA * (original.length + 1) + nextO]) {
                         break
@@ -189,7 +195,11 @@ function computeChunks(original: string, a: string, b: string): Chunk[] {
                     continue
                 }
                 // Output an unstable chunk
-                chunks.push([a.slice(lA, nextA - 1), original.slice(lO, nextO - 1), b.slice(lB, nextB - 1)])
+                chunks.push([
+                    a.slice(lA, nextA - 1),
+                    original.slice(lO, nextO - 1),
+                    b.slice(lB, nextB - 1),
+                ])
                 lO = nextO - 1
                 lA = nextA - 1
                 lB = nextB - 1
@@ -211,14 +221,9 @@ export interface Position {
     character: number
 }
 
-export interface Range {
-    start: Position
-    end: Position
-}
-
 export interface Edit {
     text: string
-    range: Range
+    range: RangeData
 }
 
 export interface Diff {
@@ -227,9 +232,9 @@ export interface Diff {
     mergedText: string | undefined
     // TODO: We can use the presence of mergedText to indicate clean
     clean: boolean
-    conflicts: Range[]
+    conflicts: RangeData[]
     edits: Edit[]
-    highlights: Range[]
+    highlights: RangeData[]
 }
 
 // Rolls over characters in text and computes the updated position to the end

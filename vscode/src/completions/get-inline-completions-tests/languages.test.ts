@@ -1,15 +1,14 @@
 import dedent from 'dedent'
-import { describe, expect, test } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-import { CompletionParameters } from '@sourcegraph/cody-shared/src/sourcegraph-api/completions/types'
+import type { CompletionParameters } from '@sourcegraph/cody-shared'
 
 import { completion } from '../test-helpers'
-import { MULTILINE_STOP_SEQUENCE } from '../text-processing'
 
 import { getInlineCompletionsInsertText, params } from './helpers'
 
 describe('[getInlineCompletions] languages', () => {
-    test('works with python', async () => {
+    it('works with python', async () => {
         const requests: CompletionParameters[] = []
         const items = await getInlineCompletionsInsertText(
             params(
@@ -31,24 +30,23 @@ describe('[getInlineCompletions] languages', () => {
                 ],
                 {
                     languageId: 'python',
-                    onNetworkRequest(request) {
-                        requests.push(request)
+                    onNetworkRequest(params) {
+                        requests.push(params)
                     },
                 }
             )
         )
-        expect(requests).toHaveLength(3)
-        expect(requests[0].stopSequences).not.toContain(MULTILINE_STOP_SEQUENCE)
+        expect(requests).toBeMultiLine()
         expect(items[0]).toMatchInlineSnapshot(`
-                "print(i)
-                    elif i % 3 == 0:
-                        print(f\\"Multiple of 3: {i}\\")
-                    else:
-                        print(f\\"ODD {i}\\")"
-            `)
+          "print(i)
+              elif i % 3 == 0:
+                  print(f"Multiple of 3: {i}")
+              else:
+                  print(f"ODD {i}")"
+        `)
     })
 
-    test('works with java', async () => {
+    it('works with java', async () => {
         const requests: CompletionParameters[] = []
         const items = await getInlineCompletionsInsertText(
             params(
@@ -73,26 +71,25 @@ describe('[getInlineCompletions] languages', () => {
                 ],
                 {
                     languageId: 'java',
-                    onNetworkRequest(request) {
-                        requests.push(request)
+                    onNetworkRequest(params) {
+                        requests.push(params)
                     },
                 }
             )
         )
-        expect(requests).toHaveLength(3)
-        expect(requests[0].stopSequences).not.toContain(MULTILINE_STOP_SEQUENCE)
+        expect(requests).toBeMultiLine()
         expect(items[0]).toMatchInlineSnapshot(`
-                "System.out.println(i);
-                    } else if (i % 3 == 0) {
-                        System.out.println(\\"Multiple of 3: \\" + i);
-                    } else {
-                        System.out.println(\\"ODD \\" + i);
-                    }"
-            `)
+          "System.out.println(i);
+              } else if (i % 3 == 0) {
+                  System.out.println("Multiple of 3: " + i);
+              } else {
+                  System.out.println("ODD " + i);
+              }"
+        `)
     })
 
     // TODO: Detect `}\nelse\n{` pattern for else skip logic
-    test('works with csharp', async () => {
+    it('works with csharp', async () => {
         const requests: CompletionParameters[] = []
         const items = await getInlineCompletionsInsertText(
             params(
@@ -124,21 +121,20 @@ describe('[getInlineCompletions] languages', () => {
                 ],
                 {
                     languageId: 'csharp',
-                    onNetworkRequest(request) {
-                        requests.push(request)
+                    onNetworkRequest(params) {
+                        requests.push(params)
                     },
                 }
             )
         )
-        expect(requests).toHaveLength(3)
-        expect(requests[0].stopSequences).not.toContain(MULTILINE_STOP_SEQUENCE)
+        expect(requests).toBeMultiLine()
         expect(items[0]).toMatchInlineSnapshot(`
                 "Console.WriteLine(i);
                     }"
             `)
     })
 
-    test('works with c++', async () => {
+    it('works with c++', async () => {
         const requests: CompletionParameters[] = []
         const items = await getInlineCompletionsInsertText(
             params(
@@ -163,25 +159,24 @@ describe('[getInlineCompletions] languages', () => {
                 ],
                 {
                     languageId: 'cpp',
-                    onNetworkRequest(request) {
-                        requests.push(request)
+                    onNetworkRequest(params) {
+                        requests.push(params)
                     },
                 }
             )
         )
-        expect(requests).toHaveLength(3)
-        expect(requests[0].stopSequences).not.toContain(MULTILINE_STOP_SEQUENCE)
+        expect(requests).toBeMultiLine()
         expect(items[0]).toMatchInlineSnapshot(`
-                "std::cout << i;
-                    } else if (i % 3 == 0) {
-                        std::cout << \\"Multiple of 3: \\" << i;
-                    } else  {
-                        std::cout << \\"ODD \\" << i;
-                    }"
-            `)
+          "std::cout << i;
+              } else if (i % 3 == 0) {
+                  std::cout << "Multiple of 3: " << i;
+              } else  {
+                  std::cout << "ODD " << i;
+              }"
+        `)
     })
 
-    test('works with c', async () => {
+    it('works with c', async () => {
         const requests: CompletionParameters[] = []
         const items = await getInlineCompletionsInsertText(
             params(
@@ -206,25 +201,25 @@ describe('[getInlineCompletions] languages', () => {
                 ],
                 {
                     languageId: 'c',
-                    onNetworkRequest(request) {
-                        requests.push(request)
+                    onNetworkRequest(params) {
+                        requests.push(params)
                     },
                 }
             )
         )
-        expect(requests).toHaveLength(3)
-        expect(requests[0].stopSequences).not.toContain(MULTILINE_STOP_SEQUENCE)
+
+        expect(requests).toBeMultiLine()
         expect(items[0]).toMatchInlineSnapshot(`
-                "printf(\\"%d\\", i);
-                    } else if (i % 3 == 0) {
-                        printf(\\"Multiple of 3: %d\\", i);
-                    } else {
-                        printf(\\"ODD %d\\", i);
-                    }"
-            `)
+          "printf("%d", i);
+              } else if (i % 3 == 0) {
+                  printf("Multiple of 3: %d", i);
+              } else {
+                  printf("ODD %d", i);
+              }"
+        `)
     })
 
-    test('works with php', async () => {
+    it('works with php', async () => {
         const requests: CompletionParameters[] = []
         const items = await getInlineCompletionsInsertText(
             params(
@@ -249,26 +244,25 @@ describe('[getInlineCompletions] languages', () => {
                 ],
                 {
                     languageId: 'c',
-                    onNetworkRequest(request) {
-                        requests.push(request)
+                    onNetworkRequest(params) {
+                        requests.push(params)
                     },
                 }
             )
         )
 
-        expect(requests).toHaveLength(3)
-        expect(requests[0].stopSequences).not.toContain(MULTILINE_STOP_SEQUENCE)
+        expect(requests).toBeMultiLine()
         expect(items[0]).toMatchInlineSnapshot(`
-              "echo $i;
-                  } else if ($i % 3 == 0) {
-                      echo \\"Multiple of 3: \\" . $i;
-                  } else {
-                      echo \\"ODD \\" . $i;
-                  }"
-            `)
+          "echo $i;
+              } else if ($i % 3 == 0) {
+                  echo "Multiple of 3: " . $i;
+              } else {
+                  echo "ODD " . $i;
+              }"
+        `)
     })
 
-    test('works with dart', async () => {
+    it('works with dart', async () => {
         const requests: CompletionParameters[] = []
         const items = await getInlineCompletionsInsertText(
             params(
@@ -293,15 +287,14 @@ describe('[getInlineCompletions] languages', () => {
                 ],
                 {
                     languageId: 'dart',
-                    onNetworkRequest(request) {
-                        requests.push(request)
+                    onNetworkRequest(params) {
+                        requests.push(params)
                     },
                 }
             )
         )
 
-        expect(requests).toHaveLength(3)
-        expect(requests[0].stopSequences).not.toContain(MULTILINE_STOP_SEQUENCE)
+        expect(requests).toBeMultiLine()
         expect(items[0]).toMatchInlineSnapshot(`
               "print(i);
                   } else if (i % 3 == 0) {

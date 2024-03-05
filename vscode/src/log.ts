@@ -1,15 +1,20 @@
 import * as vscode from 'vscode'
 
-import { CompletionLogger } from '@sourcegraph/cody-shared/src/sourcegraph-api/completions/client'
-import {
+import type {
+    CompletionLogger,
     CompletionParameters,
     CompletionResponse,
     Event,
-} from '@sourcegraph/cody-shared/src/sourcegraph-api/completions/types'
+} from '@sourcegraph/cody-shared'
 
 import { getConfiguration } from './configuration'
 
-export const outputChannel: vscode.OutputChannel = vscode.window.createOutputChannel('Cody by Sourcegraph', 'json')
+export const CODY_OUTPUT_CHANNEL = 'Cody by Sourcegraph'
+
+export const outputChannel: vscode.OutputChannel = vscode.window.createOutputChannel(
+    CODY_OUTPUT_CHANNEL,
+    'json'
+)
 
 /**
  * Logs a debug message to the "Cody by Sourcegraph" output channel.
@@ -21,7 +26,7 @@ export const outputChannel: vscode.OutputChannel = vscode.window.createOutputCha
  *   logDebug('label', 'this is a message', 'some', 'args', { verbose: 'verbose info goes here' })
  */
 export function logDebug(filterLabel: string, text: string, ...args: unknown[]): void {
-    log('error', filterLabel, text, ...args)
+    log('debug', filterLabel, text, ...args)
 }
 
 /**
@@ -90,7 +95,7 @@ function log(level: 'debug' | 'error', filterLabel: string, text: string, ...arg
 }
 
 export const logger: CompletionLogger = {
-    startCompletion(params: CompletionParameters | {}, endpoint: string) {
+    startCompletion(params: CompletionParameters | Record<string, never>, endpoint: string) {
         const workspaceConfig = vscode.workspace.getConfiguration()
         const config = getConfiguration(workspaceConfig)
 
@@ -99,7 +104,12 @@ export const logger: CompletionLogger = {
         }
 
         const start = Date.now()
-        const type = 'prompt' in params ? 'code-completion' : 'messages' in params ? 'completion' : 'code-completion'
+        const type =
+            'prompt' in params
+                ? 'code-completion'
+                : 'messages' in params
+                  ? 'completion'
+                  : 'code-completion'
         let hasFinished = false
         let lastCompletion = ''
 
@@ -126,7 +136,9 @@ export const logger: CompletionLogger = {
             )
         }
 
-        function onComplete(result: string | CompletionResponse | string[] | CompletionResponse[]): void {
+        function onComplete(
+            result: string | CompletionResponse | string[] | CompletionResponse[]
+        ): void {
             if (hasFinished) {
                 return
             }

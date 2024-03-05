@@ -1,7 +1,8 @@
-import { Meta, StoryObj } from '@storybook/react'
+import type { Meta, StoryObj } from '@storybook/react'
+import { URI } from 'vscode-uri'
 
-import { VSCodeStoryDecorator } from './storybook/VSCodeStoryDecorator'
 import { UserContextSelectorComponent } from './UserContextSelector'
+import { VSCodeStoryDecorator } from './storybook/VSCodeStoryDecorator'
 
 const meta: Meta<typeof UserContextSelectorComponent> = {
     title: 'cody/User Context Selector',
@@ -28,7 +29,7 @@ export const FileSearchEmpty: StoryObj<typeof UserContextSelectorComponent> = {
     args: {
         contextSelection: undefined,
         selected: 0,
-        formInput: '@',
+        contextQuery: '',
     },
 }
 
@@ -36,7 +37,7 @@ export const FileSearchNoMatches: StoryObj<typeof UserContextSelectorComponent> 
     args: {
         contextSelection: [],
         selected: 0,
-        formInput: '@missing',
+        contextQuery: 'missing',
     },
 }
 
@@ -44,12 +45,11 @@ export const FileSearchMatches: StoryObj<typeof UserContextSelectorComponent> = 
     args: {
         // Long enough to test text-overflow
         contextSelection: Array.from(new Array(20).keys()).map(i => ({
-            fileName: `file-${i}.py`,
-            path: { relative: `${i ? 'sub-dir/'.repeat(i * 5) + '/' : ''}file-${i}.py` },
+            uri: URI.file(`${i ? `${'sub-dir/'.repeat(i * 5)}/` : ''}file-${i}.py`),
             type: 'file',
         })),
         selected: 0,
-        formInput: '@file',
+        contextQuery: 'file',
     },
 }
 
@@ -57,53 +57,58 @@ export const SymbolSearchNoMatchesWarning: StoryObj<typeof UserContextSelectorCo
     args: {
         contextSelection: [],
         selected: 0,
-        formInput: '@#a',
+        contextQuery: '#a',
     },
 }
 
 export const SymbolSearchMatches: StoryObj<typeof UserContextSelectorComponent> = {
     args: {
         contextSelection: [
-            { fileName: 'LoginDialog', type: 'symbol', kind: 'class', path: { relative: 'lib/src/LoginDialog.tsx' } },
             {
-                fileName: 'login',
+                symbolName: 'LoginDialog',
+                type: 'symbol',
+                kind: 'class',
+                uri: URI.file('/lib/src/LoginDialog.tsx'),
+            },
+            {
+                symbolName: 'login',
                 type: 'symbol',
                 kind: 'function',
-                path: { relative: 'src/login.go' },
+                uri: URI.file('/src/login.go'),
                 range: { start: { line: 42, character: 1 }, end: { line: 44, character: 1 } },
             },
             {
-                fileName: 'handleLogin',
+                symbolName: 'handleLogin',
                 type: 'symbol',
                 kind: 'method',
-                path: { relative: `${'sub-dir/'.repeat(50)}/}/src/LoginDialog.tsx` },
+                uri: URI.file(`/${'sub-dir/'.repeat(50)}/}/src/LoginDialog.tsx`),
             },
             {
-                fileName: 'handleLogin',
+                symbolName: 'handleLogin',
                 type: 'symbol',
                 kind: 'method',
-                path: { relative: `${'sub-dir/'.repeat(50)}/}/src/LoginDialog.tsx` },
+                uri: URI.file(`/${'sub-dir/'.repeat(50)}/}/src/LoginDialog.tsx`),
             },
             {
-                fileName: 'handleLogin',
+                symbolName: 'handleLogin',
                 type: 'symbol',
                 kind: 'method',
-                path: { relative: `${'sub-dir/'.repeat(50)}/}/src/LoginDialog.tsx` },
+                uri: URI.file(`/${'sub-dir/'.repeat(50)}/}/src/LoginDialog.tsx`),
             },
             {
-                fileName: 'handleLogin',
+                symbolName: 'handleLogin',
                 type: 'symbol',
                 kind: 'method',
-                path: { relative: `${'sub-dir/'.repeat(50)}/}/src/LoginDialog.tsx` },
+                uri: URI.file(`/${'sub-dir/'.repeat(50)}/}/src/LoginDialog.tsx`),
             },
             {
-                fileName: 'handleLogin',
+                symbolName: 'handleLogin',
                 type: 'symbol',
                 kind: 'method',
-                path: { relative: `${'sub-dir/'.repeat(50)}/}/src/LoginDialog.tsx` },
+                uri: URI.file(`/${'sub-dir/'.repeat(50)}/}/src/LoginDialog.tsx`),
             },
         ],
         selected: 0,
-        formInput: '@#login',
+        contextQuery: '#login',
     },
 }

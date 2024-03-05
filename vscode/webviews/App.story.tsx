@@ -1,26 +1,22 @@
-import { ComponentMeta, ComponentStoryObj } from '@storybook/react'
+import type { ComponentMeta, ComponentStoryObj } from '@storybook/react'
 
 import { defaultAuthStatus } from '../src/chat/protocol'
 
 import { App } from './App'
-import { VSCodeStoryDecorator } from './storybook/VSCodeStoryDecorator'
-import { VSCodeWrapper } from './utils/VSCodeApi'
+import { VSCodeStoryDecorator, WithBorder } from './storybook/VSCodeStoryDecorator'
+import type { VSCodeWrapper } from './utils/VSCodeApi'
 
 const meta: ComponentMeta<typeof App> = {
     title: 'cody/App',
     component: App,
 
-    decorators: [VSCodeStoryDecorator],
+    decorators: [WithBorder, VSCodeStoryDecorator],
 }
 
 export default meta
 
 export const Simple: ComponentStoryObj<typeof App> = {
-    render: () => (
-        <div style={{ background: 'rgb(28, 33, 40)' }}>
-            <App vscodeAPI={dummyVSCodeAPI} />
-        </div>
-    ),
+    render: () => <App vscodeAPI={dummyVSCodeAPI} />,
 }
 
 const dummyVSCodeAPI: VSCodeWrapper = {
@@ -36,6 +32,7 @@ const dummyVSCodeAPI: VSCodeWrapper = {
                 homeDir: '/home/user',
                 uiKindIsWeb: false,
                 extensionVersion: '0.0.0',
+                experimentalGuardrails: false,
             },
             authStatus: {
                 ...defaultAuthStatus,
@@ -47,6 +44,7 @@ const dummyVSCodeAPI: VSCodeWrapper = {
                 siteVersion: '5.1.0',
                 endpoint: 'https://example.com',
             },
+            workspaceFolderUris: [],
         })
         return () => {}
     },

@@ -1,30 +1,14 @@
-import { ContextFile, PreciseContext } from '../../codebase-context/messages'
-import { Message } from '../../sourcegraph-api'
-import { CodyDefaultCommands } from '../prompts'
-import { RecipeID } from '../recipes/recipe'
+import type { ContextItem } from '../../codebase-context/messages'
+import type { Message } from '../../sourcegraph-api'
 
-import { TranscriptJSON } from '.'
-
-export interface ChatButton {
-    label: string
-    action: string
-    onClick: (action: string) => void
-    appearance?: 'primary' | 'secondary' | 'icon'
-}
+import type { TranscriptJSON } from '.'
+import type { DefaultCodyCommands } from '../../commands/types'
 
 export interface ChatMessage extends Message {
     displayText?: string
-    contextFiles?: ContextFile[]
-    preciseContext?: PreciseContext[]
-    buttons?: ChatButton[]
-    data?: any
+    contextFiles?: ContextItem[]
     metadata?: ChatMetadata
-    // TODO(dantup): Is anyone using string?
-    error?: string | ChatError
-}
-
-export interface InteractionMessage extends ChatMessage {
-    prefix?: string
+    error?: ChatError
 }
 
 export interface ChatError {
@@ -32,12 +16,22 @@ export interface ChatError {
     name: string
     message: string
 
+    // Rate-limit properties
+    retryAfter?: string | null
+    limit?: number
+    userMessage?: string
+    retryAfterDate?: Date
+    retryAfterDateString?: string // same as retry after Date but JSON serializable
+    retryMessage?: string
+    feature?: string
+    upgradeIsAvailable?: boolean
+
     // Prevent Error from being passed as ChatError.
     // Errors should be converted using errorToChatError.
     isChatErrorGuard: 'isChatErrorGuard'
 }
 
-export interface ChatMetadata {
+interface ChatMetadata {
     source?: ChatEventSource
     requestID?: string
     chatModel?: string
@@ -45,27 +39,32 @@ export interface ChatMetadata {
 
 export interface UserLocalHistory {
     chat: ChatHistory
-    input: string[]
+    input: ChatInputHistory[]
 }
 
 export interface ChatHistory {
     [chatID: string]: TranscriptJSON
 }
 
-export interface OldChatHistory {
-    [chatID: string]: ChatMessage[]
+export interface ChatInputHistory {
+    inputText: string
+    inputContextFiles: ContextItem[]
 }
 
 export type ChatEventSource =
     | 'chat'
-    | 'editor'
-    | 'menu'
-    | 'code-action'
+    | 'editor' // e.g. shortcut, right-click menu or VS Code command palette
+    | 'menu' // Cody command palette
+    | 'sidebar'
+    | 'code-action:explain'
+    | 'code-action:document'
+    | 'code-action:edit'
+    | 'code-action:fix'
+    | 'code-action:generate'
     | 'custom-commands'
     | 'test'
     | 'code-lens'
-    | CodyDefaultCommands
-    | RecipeID
+    | DefaultCodyCommands
 
 /**
  * Converts an Error to a ChatError. Note that this cannot be done naively,

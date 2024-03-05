@@ -1,10 +1,7 @@
-import * as vscode from 'vscode'
+import type * as vscode from 'vscode'
 
-import { ChatEventSource } from '@sourcegraph/cody-shared/src/chat/transcript/messages'
-import { FixupIntent } from '@sourcegraph/cody-shared/src/editor'
-
-import { FixupFile } from './FixupFile'
-import { FixupTask } from './FixupTask'
+import type { FixupFile } from './FixupFile'
+import type { FixupTask } from './FixupTask'
 
 // Role interfaces so that sub-objects of the FixupController can consume a
 // narrow part of the controller.
@@ -29,20 +26,6 @@ export interface FixupFileCollection {
  */
 export interface FixupIdleTaskRunner {
     scheduleIdle<T>(callback: () => T): Promise<T>
-}
-
-/**
- * Creates and starts processing a task.
- */
-export interface FixupTaskFactory {
-    createTask(
-        documentUri: vscode.Uri,
-        instruction: string,
-        selectionRange: vscode.Range,
-        intent?: FixupIntent,
-        insertMode?: boolean,
-        source?: ChatEventSource
-    ): Promise<FixupTask>
 }
 
 /**

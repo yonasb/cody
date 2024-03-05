@@ -1,20 +1,16 @@
 import { describe, expect, test } from 'vitest'
 
-import { CodebaseContext } from '@sourcegraph/cody-shared/src/codebase-context'
 import {
+    CodebaseContext,
+    type ContextItem,
     populateCurrentEditorSelectedContextTemplate,
     populateCurrentSelectedCodeContextTemplate,
-} from '@sourcegraph/cody-shared/src/prompt/templates'
+    testFileUri,
+} from '@sourcegraph/cody-shared'
 
 import * as vscode from '../../testutils/mocks'
 
-import {
-    contextItemsToContextFiles,
-    contextMessageToContextItem,
-    getChatPanelTitle,
-    stripContextWrapper,
-} from './chat-helpers'
-import { ContextItem } from './SimpleChatModel'
+import { contextMessageToContextItem, getChatPanelTitle, stripContextWrapper } from './chat-helpers'
 
 describe('unwrap context snippets', () => {
     test('should wrap and unwrap context item snippets', () => {
@@ -25,24 +21,28 @@ describe('unwrap context snippets', () => {
         const testCases: TestCase[] = [
             {
                 contextItem: {
-                    uri: vscode.Uri.file('test.ts'),
+                    type: 'file',
+                    uri: testFileUri('test.ts'),
                     range: new vscode.Range(0, 1, 2, 3),
-                    text: '// This is code context',
+                    source: 'editor',
+                    content: '// This is code context',
                 },
             },
             {
                 contextItem: {
-                    uri: vscode.Uri.file('doc.md'),
+                    type: 'file',
+                    uri: testFileUri('doc.md'),
                     range: new vscode.Range(0, 1, 2, 3),
-                    text: 'This is markdown context',
+                    source: 'editor',
+                    content: 'This is markdown context',
                 },
             },
         ]
 
         for (const testCase of testCases) {
-            const contextFiles = contextItemsToContextFiles([testCase.contextItem])
+            const contextFiles = [testCase.contextItem]
             const contextMessages = CodebaseContext.makeContextMessageWithResponse({
-                file: contextFiles[0],
+                file: contextFiles[0] as ContextItem & Required<Pick<ContextItem, 'uri'>>,
                 results: [contextFiles[0].content || ''],
             })
             const contextItem = contextMessageToContextItem(contextMessages[0])
@@ -58,11 +58,17 @@ describe('unwrap context snippets', () => {
 
         const testCases: TestCase[] = [
             {
-                input: populateCurrentEditorSelectedContextTemplate('// This is the code', 'test.ts'),
+                input: populateCurrentEditorSelectedContextTemplate(
+                    '// This is the code',
+                    testFileUri('test.ts')
+                ),
                 expOut: '// This is the code',
             },
             {
-                input: populateCurrentSelectedCodeContextTemplate('// This is the code', 'test.ts'),
+                input: populateCurrentSelectedCodeContextTemplate(
+                    '// This is the code',
+                    testFileUri('test.ts')
+                ),
                 expOut: '// This is the code',
             },
         ]

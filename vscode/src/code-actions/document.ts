@@ -1,6 +1,6 @@
 import * as vscode from 'vscode'
 
-import { ExecuteEditArguments } from '../edit/execute'
+import type { ExecuteEditArguments } from '../edit/execute'
 import { execQueryWrapper } from '../tree-sitter/query-sdk'
 
 export class DocumentCodeAction implements vscode.CodeActionProvider {
@@ -20,7 +20,9 @@ export class DocumentCodeAction implements vscode.CodeActionProvider {
             document.lineAt(node.endPosition.row).range.end
         )
         const displayText =
-            name === 'documentableNode' ? `Ask Cody to Document: ${node.text}` : 'Ask Cody to Document This Export'
+            name === 'documentableNode'
+                ? `Ask Cody to Document: ${node.text}`
+                : 'Ask Cody to Document This Export'
 
         return [this.createCommandCodeAction(document, documentableRange, displayText)]
     }
@@ -36,13 +38,15 @@ export class DocumentCodeAction implements vscode.CodeActionProvider {
             command: 'cody.command.edit-code',
             arguments: [
                 {
-                    instruction: this.instruction,
-                    range,
-                    intent: 'doc',
-                    document,
-                    insertMode: true,
+                    configuration: {
+                        instruction: this.instruction,
+                        range,
+                        intent: 'doc',
+                        document,
+                        mode: 'insert',
+                    },
+                    source,
                 } satisfies ExecuteEditArguments,
-                source,
             ],
             title: displayText,
         }

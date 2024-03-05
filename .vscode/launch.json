@@ -7,7 +7,10 @@
       "request": "launch",
       "runtimeExecutable": "${execPath}",
       "preLaunchTask": "Build VS Code Extension (Desktop)",
-      "args": ["--extensionDevelopmentPath=${workspaceRoot}/vscode"],
+      "args": [
+        "--extensionDevelopmentPath=${workspaceRoot}/vscode",
+        "--disable-extension=github.copilot"
+      ],
       "sourceMaps": true,
       "outFiles": ["${workspaceRoot}/vscode/dist/**/*.js"],
       "env": {
@@ -15,6 +18,10 @@
         "CODY_DEBUG_ENABLE": "true"
         // Enable the Node debug protocol for the TypeScript server:
         // "TSS_DEBUG": "5859"
+        // Let extension behave like you're on dotcom when connected locally:
+        // "TESTING_DOTCOM_URL": "https://sourcegraph.test:3443"
+        // Enable Sentry in local development mode:
+        // "ENABLE_SENTRY": "true"
       }
     },
     {
@@ -26,7 +33,8 @@
       "args": [
         "--user-data-dir=/tmp/vscode-cody-extension-dev-host",
         "--profile-temp",
-        "--extensionDevelopmentPath=${workspaceRoot}/vscode"
+        "--extensionDevelopmentPath=${workspaceRoot}/vscode",
+        "--disable-extension=github.copilot"
       ],
       "sourceMaps": true,
       "outFiles": ["${workspaceRoot}/vscode/dist/**/*.js"],
@@ -47,7 +55,7 @@
     },
     {
       "name": "Launch VS Code Extension (Web Extension Host)",
-      "type": "pwa-extensionHost",
+      "type": "extensionHost",
       "debugWebWorkerHost": true,
       "request": "launch",
       "preLaunchTask": "Build VS Code Extension (Web)",
@@ -64,7 +72,7 @@
       // ${relativeFile} will guarantee the "current" file, but fileBaseNameNoExtension
       // can be convenient because running with a file like "graph-section-observer.ts"
       // (the implementation, not the test) will run the correct tests.
-      "args": ["run", "${fileBasenameNoExtension}"],
+      "args": ["run", "${fileBasenameNoExtension}", "--disable-console-intercept"],
       "smartStep": true
     }
   ]
